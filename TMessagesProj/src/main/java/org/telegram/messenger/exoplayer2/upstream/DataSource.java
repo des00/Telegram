@@ -16,6 +16,7 @@
 package org.telegram.messenger.exoplayer2.upstream;
 
 import android.net.Uri;
+import android.support.annotation.Nullable;
 import org.telegram.messenger.exoplayer2.C;
 import java.io.IOException;
 
@@ -65,7 +66,7 @@ public interface DataSource {
    * @param buffer The buffer into which the read data should be stored.
    * @param offset The start offset into {@code buffer} at which data should be written.
    * @param readLength The maximum number of bytes to read.
-   * @return The number of bytes read, or {@link C#RESULT_END_OF_INPUT} if no data is avaliable
+   * @return The number of bytes read, or {@link C#RESULT_END_OF_INPUT} if no data is available
    *     because the end of the opened range has been reached.
    * @throws IOException If an error occurs reading from the source.
    */
@@ -79,7 +80,7 @@ public interface DataSource {
    *
    * @return The {@link Uri} from which data is being read, or null if the source is not open.
    */
-  Uri getUri();
+  @Nullable Uri getUri();
 
   /**
    * Closes the source.

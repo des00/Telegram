@@ -33,9 +33,9 @@ import java.util.concurrent.TimeUnit;
 
 public class AnimatedFileDrawable extends BitmapDrawable implements Animatable {
 
-    private static native int createDecoder(String src, int[] params);
-    private static native void destroyDecoder(int ptr);
-    private static native int getVideoFrame(int ptr, Bitmap bitmap, int[] params);
+    private static native long createDecoder(String src, int[] params);
+    private static native void destroyDecoder(long ptr);
+    private static native int getVideoFrame(long ptr, Bitmap bitmap, int[] params);
 
     private long lastFrameTime;
     private int lastTimeStamp;
@@ -47,6 +47,8 @@ public class AnimatedFileDrawable extends BitmapDrawable implements Animatable {
     private Bitmap backgroundBitmap;
     private boolean destroyWhenDone;
     private boolean decoderCreated;
+    private boolean decodeSingleFrame;
+    private boolean singleFrameDecoded;
     private File path;
     private boolean recycleWithSecond;
 
@@ -70,7 +72,7 @@ public class AnimatedFileDrawable extends BitmapDrawable implements Animatable {
     private static final Handler uiHandler = new Handler(Looper.getMainLooper());
     private volatile boolean isRunning;
     private volatile boolean isRecycled;
-    private volatile int nativePtr;
+    private volatile long nativePtr;
     private static ScheduledThreadPoolExecutor executor = new ScheduledThreadPoolExecutor(2, new ThreadPoolExecutor.DiscardPolicy());
 
     private View parentView = null;
@@ -105,6 +107,7 @@ public class AnimatedFileDrawable extends BitmapDrawable implements Animatable {
                 }
                 return;
             }
+            singleFrameDecoded = true;
             loadFrameTask = null;
             nextRenderingBitmap = backgroundBitmap;
             nextRenderingShader = backgroundShader;
@@ -186,6 +189,13 @@ public class AnimatedFileDrawable extends BitmapDrawable implements Animatable {
         }
     }
 
+    public void setAllowDecodeSingleFrame(boolean value) {
+        decodeSingleFrame = value;
+        if (decodeSingleFrame) {
+            scheduleNextGetFrame();
+        }
+    }
+
     public void recycle() {
         if (secondParentView != null) {
             recycleWithSecond = true;
@@ -244,7 +254,7 @@ public class AnimatedFileDrawable extends BitmapDrawable implements Animatable {
     }
 
     private void scheduleNextGetFrame() {
-        if (loadFrameTask != null || nativePtr == 0 && decoderCreated || destroyWhenDone || !isRunning) {
+        if (loadFrameTask != null || nativePtr == 0 && decoderCreated || destroyWhenDone || !isRunning && (!decodeSingleFrame || decodeSingleFrame && singleFrameDecoded)) {
             return;
         }
         long ms = 0;
@@ -298,6 +308,12 @@ public class AnimatedFileDrawable extends BitmapDrawable implements Animatable {
                     lastFrameTime = now;
                 }
             }
+        } else if (!isRunning && decodeSingleFrame && Math.abs(now - lastFrameTime) >= invalidateAfter && nextRenderingBitmap != null) {
+            renderingBitmap = nextRenderingBitmap;
+            renderingShader = nextRenderingShader;
+            nextRenderingBitmap = null;
+            nextRenderingShader = null;
+            lastFrameTime = now;
         }
 
         if (renderingBitmap != null) {

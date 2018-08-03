@@ -79,7 +79,8 @@ import org.telegram.messenger.exoplayer2.video.AvcConfig;
   @Override
   protected void parsePayload(ParsableByteArray data, long timeUs) throws ParserException {
     int packetType = data.readUnsignedByte();
-    int compositionTimeMs = data.readUnsignedInt24();
+    int compositionTimeMs = data.readInt24();
+
     timeUs += compositionTimeMs * 1000L;
     // Parse avc sequence header in case this was not done before.
     if (packetType == AVC_PACKET_TYPE_SEQUENCE_HEADER && !hasOutputFormat) {
@@ -93,7 +94,7 @@ import org.telegram.messenger.exoplayer2.video.AvcConfig;
           avcConfig.initializationData, Format.NO_VALUE, avcConfig.pixelWidthAspectRatio, null);
       output.format(format);
       hasOutputFormat = true;
-    } else if (packetType == AVC_PACKET_TYPE_AVC_NALU) {
+    } else if (packetType == AVC_PACKET_TYPE_AVC_NALU && hasOutputFormat) {
       // TODO: Deduplicate with Mp4Extractor.
       // Zero the top three bytes of the array that we'll use to decode nal unit lengths, in case
       // they're only 1 or 2 bytes long.

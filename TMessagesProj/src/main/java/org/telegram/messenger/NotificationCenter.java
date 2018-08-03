@@ -8,6 +8,7 @@
 
 package org.telegram.messenger;
 
+import android.support.annotation.UiThread;
 import android.util.SparseArray;
 
 import java.util.ArrayList;
@@ -21,12 +22,15 @@ public class NotificationCenter {
     public static final int dialogsNeedReload = totalEvents++;
     public static final int closeChats = totalEvents++;
     public static final int messagesDeleted = totalEvents++;
+    public static final int historyCleared = totalEvents++;
     public static final int messagesRead = totalEvents++;
     public static final int messagesDidLoaded = totalEvents++;
     public static final int messageReceivedByAck = totalEvents++;
     public static final int messageReceivedByServer = totalEvents++;
     public static final int messageSendError = totalEvents++;
     public static final int contactsDidLoaded = totalEvents++;
+    public static final int contactsImported = totalEvents++;
+    public static final int hasNewContactsToImport = totalEvents++;
     public static final int chatDidCreated = totalEvents++;
     public static final int chatDidFailCreate = totalEvents++;
     public static final int chatInfoDidLoaded = totalEvents++;
@@ -39,10 +43,8 @@ public class NotificationCenter {
     public static final int dialogPhotosLoaded = totalEvents++;
     public static final int removeAllMessagesFromDialog = totalEvents++;
     public static final int notificationsSettingsUpdated = totalEvents++;
-    public static final int pushMessagesUpdated = totalEvents++;
     public static final int blockedUsersDidLoaded = totalEvents++;
     public static final int openedChatChanged = totalEvents++;
-    public static final int stopEncodingService = totalEvents++;
     public static final int didCreatedNewDeleteTask = totalEvents++;
     public static final int mainUserInfoChanged = totalEvents++;
     public static final int privacyRulesUpdated = totalEvents++;
@@ -52,7 +54,6 @@ public class NotificationCenter {
     public static final int didSetPasscode = totalEvents++;
     public static final int didSetTwoStepPassword = totalEvents++;
     public static final int didRemovedTwoStepPassword = totalEvents++;
-    public static final int screenStateChanged = totalEvents++;
     public static final int didLoadedReplyMessages = totalEvents++;
     public static final int didLoadedPinnedMessage = totalEvents++;
     public static final int newSessionReceived = totalEvents++;
@@ -60,41 +61,34 @@ public class NotificationCenter {
     public static final int didReceivedWebpagesInUpdates = totalEvents++;
     public static final int stickersDidLoaded = totalEvents++;
     public static final int featuredStickersDidLoaded = totalEvents++;
-    public static final int didReplacedPhotoInMemCache = totalEvents++;
+    public static final int groupStickersDidLoaded = totalEvents++;
     public static final int messagesReadContent = totalEvents++;
     public static final int botInfoDidLoaded = totalEvents++;
     public static final int userInfoDidLoaded = totalEvents++;
     public static final int botKeyboardDidLoaded = totalEvents++;
     public static final int chatSearchResultsAvailable = totalEvents++;
+    public static final int chatSearchResultsLoading = totalEvents++;
     public static final int musicDidLoaded = totalEvents++;
     public static final int needShowAlert = totalEvents++;
     public static final int didUpdatedMessagesViews = totalEvents++;
     public static final int needReloadRecentDialogsSearch = totalEvents++;
-    public static final int locationPermissionGranted = totalEvents++;
     public static final int peerSettingsDidLoaded = totalEvents++;
     public static final int wasUnableToFindCurrentLocation = totalEvents++;
     public static final int reloadHints = totalEvents++;
     public static final int reloadInlineHints = totalEvents++;
     public static final int newDraftReceived = totalEvents++;
     public static final int recentDocumentsDidLoaded = totalEvents++;
-    public static final int cameraInitied = totalEvents++;
     public static final int needReloadArchivedStickers = totalEvents++;
-    public static final int didSetNewWallpapper = totalEvents++;
     public static final int archivedStickersCountDidLoaded = totalEvents++;
     public static final int paymentFinished = totalEvents++;
+    public static final int channelRightsUpdated = totalEvents++;
+    public static final int openArticle = totalEvents++;
+    public static final int updateMentionsCount = totalEvents++;
 
     public static final int httpFileDidLoaded = totalEvents++;
     public static final int httpFileDidFailedLoad = totalEvents++;
 
-    public static final int messageThumbGenerated = totalEvents++;
-
-    public static final int wallpapersDidLoaded = totalEvents++;
-    public static final int closeOtherAppActivities = totalEvents++;
     public static final int didUpdatedConnectionState = totalEvents++;
-    public static final int didReceiveSmsCode = totalEvents++;
-    public static final int didReceiveCall = totalEvents++;
-    public static final int emojiDidLoaded = totalEvents++;
-    public static final int appDidLogout = totalEvents++;
 
     public static final int FileDidUpload = totalEvents++;
     public static final int FileDidFailUpload = totalEvents++;
@@ -106,9 +100,12 @@ public class NotificationCenter {
     public static final int FileNewChunkAvailable = totalEvents++;
     public static final int FilePreparingFailed = totalEvents++;
 
-    public static final int audioProgressDidChanged = totalEvents++;
-    public static final int audioDidReset = totalEvents++;
-    public static final int audioPlayStateChanged = totalEvents++;
+    public static final int dialogsUnreadCounterChanged = totalEvents++;
+
+    public static final int messagePlayingProgressDidChanged = totalEvents++;
+    public static final int messagePlayingDidReset = totalEvents++;
+    public static final int messagePlayingPlayStateChanged = totalEvents++;
+    public static final int messagePlayingDidStarted = totalEvents++;
     public static final int recordProgressChanged = totalEvents++;
     public static final int recordStarted = totalEvents++;
     public static final int recordStartError = totalEvents++;
@@ -116,12 +113,38 @@ public class NotificationCenter {
     public static final int screenshotTook = totalEvents++;
     public static final int albumsDidLoaded = totalEvents++;
     public static final int audioDidSent = totalEvents++;
-    public static final int audioDidStarted = totalEvents++;
     public static final int audioRouteChanged = totalEvents++;
 
     public static final int didStartedCall = totalEvents++;
     public static final int didEndedCall = totalEvents++;
     public static final int closeInCallActivity = totalEvents++;
+
+    public static final int appDidLogout = totalEvents++;
+
+    //global
+    public static final int pushMessagesUpdated = totalEvents++;
+    public static final int stopEncodingService = totalEvents++;
+    public static final int wallpapersDidLoaded = totalEvents++;
+    public static final int didReceiveSmsCode = totalEvents++;
+    public static final int didReceiveCall = totalEvents++;
+    public static final int emojiDidLoaded = totalEvents++;
+    public static final int closeOtherAppActivities = totalEvents++;
+    public static final int cameraInitied = totalEvents++;
+    public static final int didReplacedPhotoInMemCache = totalEvents++;
+    public static final int messageThumbGenerated = totalEvents++;
+    public static final int didSetNewTheme = totalEvents++;
+    public static final int needSetDayNightTheme = totalEvents++;
+    public static final int locationPermissionGranted = totalEvents++;
+    public static final int reloadInterface = totalEvents++;
+    public static final int suggestedLangpack = totalEvents++;
+    public static final int didSetNewWallpapper = totalEvents++;
+    public static final int proxySettingsChanged = totalEvents++;
+    public static final int proxyCheckDone = totalEvents++;
+    public static final int liveLocationsChanged = totalEvents++;
+    public static final int liveLocationsCacheChanged = totalEvents++;
+    public static final int notificationsCountUpdated = totalEvents++;
+    public static final int playerDidStartPlaying = totalEvents++;
+    public static final int closeSearchByActiveAction = totalEvents++;
 
     private SparseArray<ArrayList<Object>> observers = new SparseArray<>();
     private SparseArray<ArrayList<Object>> removeAfterBroadcast = new SparseArray<>();
@@ -134,7 +157,7 @@ public class NotificationCenter {
     private int[] allowedNotifications;
 
     public interface NotificationCenterDelegate {
-        void didReceivedNotification(int id, Object... args);
+        void didReceivedNotification(int id, int account, Object... args);
     }
 
     private class DelayedPost {
@@ -148,19 +171,40 @@ public class NotificationCenter {
         private Object[] args;
     }
 
-    private static volatile NotificationCenter Instance = null;
+    private int currentAccount;
+    private static volatile NotificationCenter Instance[] = new NotificationCenter[UserConfig.MAX_ACCOUNT_COUNT];
+    private static volatile NotificationCenter globalInstance;
 
-    public static NotificationCenter getInstance() {
-        NotificationCenter localInstance = Instance;
+    @UiThread
+    public static NotificationCenter getInstance(int num) {
+        NotificationCenter localInstance = Instance[num];
         if (localInstance == null) {
             synchronized (NotificationCenter.class) {
-                localInstance = Instance;
+                localInstance = Instance[num];
                 if (localInstance == null) {
-                    Instance = localInstance = new NotificationCenter();
+                    Instance[num] = localInstance = new NotificationCenter(num);
                 }
             }
         }
         return localInstance;
+    }
+
+    @UiThread
+    public static NotificationCenter getGlobalInstance() {
+        NotificationCenter localInstance = globalInstance;
+        if (localInstance == null) {
+            synchronized (NotificationCenter.class) {
+                localInstance = globalInstance;
+                if (localInstance == null) {
+                    globalInstance = localInstance = new NotificationCenter(-1);
+                }
+            }
+        }
+        return localInstance;
+    }
+
+    public NotificationCenter(int account) {
+        currentAccount = account;
     }
 
     public void setAllowedNotificationsDutingAnimation(int notifications[]) {
@@ -170,7 +214,8 @@ public class NotificationCenter {
     public void setAnimationInProgress(boolean value) {
         animationInProgress = value;
         if (!animationInProgress && !delayedPosts.isEmpty()) {
-            for (DelayedPost delayedPost : delayedPosts) {
+            for (int a = 0; a < delayedPosts.size(); a++) {
+                DelayedPost delayedPost = delayedPosts.get(a);
                 postNotificationNameInternal(delayedPost.id, true, delayedPost.args);
             }
             delayedPosts.clear();
@@ -194,6 +239,7 @@ public class NotificationCenter {
         postNotificationNameInternal(id, allowDuringAnimation, args);
     }
 
+    @UiThread
     public void postNotificationNameInternal(int id, boolean allowDuringAnimation, Object... args) {
         if (BuildVars.DEBUG_VERSION) {
             if (Thread.currentThread() != ApplicationLoader.applicationHandler.getLooper().getThread()) {
@@ -203,7 +249,7 @@ public class NotificationCenter {
         if (!allowDuringAnimation && animationInProgress) {
             DelayedPost delayedPost = new DelayedPost(id, args);
             delayedPosts.add(delayedPost);
-            if (BuildVars.DEBUG_VERSION) {
+            if (BuildVars.LOGS_ENABLED) {
                 FileLog.e("delay post notification " + id + " with args count = " + args.length);
             }
             return;
@@ -213,7 +259,7 @@ public class NotificationCenter {
         if (objects != null && !objects.isEmpty()) {
             for (int a = 0; a < objects.size(); a++) {
                 Object obj = objects.get(a);
-                ((NotificationCenterDelegate) obj).didReceivedNotification(id, args);
+                ((NotificationCenterDelegate) obj).didReceivedNotification(id, currentAccount, args);
             }
         }
         broadcasting--;

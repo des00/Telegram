@@ -50,14 +50,15 @@ import java.util.TreeSet;
 
   public static final String ANONYMOUS_REGION_ID = "";
   public static final String ATTR_ID = "id";
-  public static final String ATTR_TTS_BACKGROUND_COLOR = "backgroundColor";
+  public static final String ATTR_TTS_ORIGIN = "origin";
   public static final String ATTR_TTS_EXTENT = "extent";
+  public static final String ATTR_TTS_DISPLAY_ALIGN = "displayAlign";
+  public static final String ATTR_TTS_BACKGROUND_COLOR = "backgroundColor";
   public static final String ATTR_TTS_FONT_STYLE = "fontStyle";
   public static final String ATTR_TTS_FONT_SIZE = "fontSize";
   public static final String ATTR_TTS_FONT_FAMILY = "fontFamily";
   public static final String ATTR_TTS_FONT_WEIGHT = "fontWeight";
   public static final String ATTR_TTS_COLOR = "color";
-  public static final String ATTR_TTS_ORIGIN = "origin";
   public static final String ATTR_TTS_TEXT_DECORATION = "textDecoration";
   public static final String ATTR_TTS_TEXT_ALIGN = "textAlign";
 
@@ -174,35 +175,51 @@ import java.util.TreeSet;
       Map<String, TtmlRegion> regionMap) {
     TreeMap<String, SpannableStringBuilder> regionOutputs = new TreeMap<>();
     traverseForText(timeUs, false, regionId, regionOutputs);
-    traverseForStyle(globalStyles, regionOutputs);
+    traverseForStyle(timeUs, globalStyles, regionOutputs);
     List<Cue> cues = new ArrayList<>();
     for (Entry<String, SpannableStringBuilder> entry : regionOutputs.entrySet()) {
       TtmlRegion region = regionMap.get(entry.getKey());
-      cues.add(new Cue(cleanUpText(entry.getValue()), null, region.line, region.lineType,
-          Cue.TYPE_UNSET, region.position, Cue.TYPE_UNSET, region.width));
+      cues.add(
+          new Cue(
+              cleanUpText(entry.getValue()),
+              /* textAlignment= */ null,
+              region.line,
+              region.lineType,
+              region.lineAnchor,
+              region.position,
+              /* positionAnchor= */ Cue.TYPE_UNSET,
+              region.width,
+              region.textSizeType,
+              region.textSize));
     }
     return cues;
   }
 
-  private void traverseForText(long timeUs,  boolean descendsPNode,
-      String inheritedRegion, Map<String, SpannableStringBuilder> regionOutputs) {
+  private void traverseForText(
+      long timeUs,
+      boolean descendsPNode,
+      String inheritedRegion,
+      Map<String, SpannableStringBuilder> regionOutputs) {
     nodeStartsByRegion.clear();
     nodeEndsByRegion.clear();
-    String resolvedRegionId = regionId;
-    if (ANONYMOUS_REGION_ID.equals(resolvedRegionId)) {
-      resolvedRegionId = inheritedRegion;
+    if (TAG_METADATA.equals(tag)) {
+      // Ignore metadata tag.
+      return;
     }
+
+    String resolvedRegionId = ANONYMOUS_REGION_ID.equals(regionId) ? inheritedRegion : regionId;
+
     if (isTextNode && descendsPNode) {
       getRegionOutput(resolvedRegionId, regionOutputs).append(text);
     } else if (TAG_BR.equals(tag) && descendsPNode) {
       getRegionOutput(resolvedRegionId, regionOutputs).append('\n');
-    } else if (TAG_METADATA.equals(tag)) {
-      // Do nothing.
     } else if (isActive(timeUs)) {
-      boolean isPNode = TAG_P.equals(tag);
+      // This is a container node, which can contain zero or more children.
       for (Entry<String, SpannableStringBuilder> entry : regionOutputs.entrySet()) {
         nodeStartsByRegion.put(entry.getKey(), entry.getValue().length());
       }
+
+      boolean isPNode = TAG_P.equals(tag);
       for (int i = 0; i < getChildCount(); i++) {
         getChild(i).traverseForText(timeUs, descendsPNode || isPNode, resolvedRegionId,
             regionOutputs);
@@ -210,39 +227,50 @@ import java.util.TreeSet;
       if (isPNode) {
         TtmlRenderUtil.endParagraph(getRegionOutput(resolvedRegionId, regionOutputs));
       }
+
       for (Entry<String, SpannableStringBuilder> entry : regionOutputs.entrySet()) {
         nodeEndsByRegion.put(entry.getKey(), entry.getValue().length());
       }
     }
   }
 
-  private static SpannableStringBuilder getRegionOutput(String resolvedRegionId,
-      Map<String, SpannableStringBuilder> regionOutputs) {
+  private static SpannableStringBuilder getRegionOutput(
+      String resolvedRegionId, Map<String, SpannableStringBuilder> regionOutputs) {
     if (!regionOutputs.containsKey(resolvedRegionId)) {
       regionOutputs.put(resolvedRegionId, new SpannableStringBuilder());
     }
     return regionOutputs.get(resolvedRegionId);
   }
 
-  private void traverseForStyle(Map<String, TtmlStyle> globalStyles,
+  private void traverseForStyle(
+      long timeUs,
+      Map<String, TtmlStyle> globalStyles,
       Map<String, SpannableStringBuilder> regionOutputs) {
+    if (!isActive(timeUs)) {
+      return;
+    }
     for (Entry<String, Integer> entry : nodeEndsByRegion.entrySet()) {
       String regionId = entry.getKey();
       int start = nodeStartsByRegion.containsKey(regionId) ? nodeStartsByRegion.get(regionId) : 0;
-      applyStyleToOutput(globalStyles, regionOutputs.get(regionId), start, entry.getValue());
-      for (int i = 0; i < getChildCount(); ++i) {
-        getChild(i).traverseForStyle(globalStyles, regionOutputs);
+      int end = entry.getValue();
+      if (start != end) {
+        SpannableStringBuilder regionOutput = regionOutputs.get(regionId);
+        applyStyleToOutput(globalStyles, regionOutput, start, end);
       }
+    }
+    for (int i = 0; i < getChildCount(); ++i) {
+      getChild(i).traverseForStyle(timeUs, globalStyles, regionOutputs);
     }
   }
 
-  private void applyStyleToOutput(Map<String, TtmlStyle> globalStyles,
-      SpannableStringBuilder regionOutput, int start, int end) {
-    if (start != end) {
-      TtmlStyle resolvedStyle = TtmlRenderUtil.resolveStyle(style, styleIds, globalStyles);
-      if (resolvedStyle != null) {
-        TtmlRenderUtil.applyStylesToSpan(regionOutput, start, end, resolvedStyle);
-      }
+  private void applyStyleToOutput(
+      Map<String, TtmlStyle> globalStyles,
+      SpannableStringBuilder regionOutput,
+      int start,
+      int end) {
+    TtmlStyle resolvedStyle = TtmlRenderUtil.resolveStyle(style, styleIds, globalStyles);
+    if (resolvedStyle != null) {
+      TtmlRenderUtil.applyStylesToSpan(regionOutput, start, end, resolvedStyle);
     }
   }
 

@@ -15,6 +15,8 @@
  */
 package org.telegram.messenger.exoplayer2.extractor.flv;
 
+import android.support.annotation.IntDef;
+import org.telegram.messenger.exoplayer2.C;
 import org.telegram.messenger.exoplayer2.extractor.Extractor;
 import org.telegram.messenger.exoplayer2.extractor.ExtractorInput;
 import org.telegram.messenger.exoplayer2.extractor.ExtractorOutput;
@@ -24,11 +26,13 @@ import org.telegram.messenger.exoplayer2.extractor.SeekMap;
 import org.telegram.messenger.exoplayer2.util.ParsableByteArray;
 import org.telegram.messenger.exoplayer2.util.Util;
 import java.io.IOException;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
 
 /**
- * Facilitates the extraction of data from the FLV container format.
+ * Extracts data from the FLV container format.
  */
-public final class FlvExtractor implements Extractor, SeekMap {
+public final class FlvExtractor implements Extractor {
 
   /**
    * Factory for {@link FlvExtractor} instances.
@@ -42,15 +46,21 @@ public final class FlvExtractor implements Extractor, SeekMap {
 
   };
 
-  // Header sizes.
-  private static final int FLV_HEADER_SIZE = 9;
-  private static final int FLV_TAG_HEADER_SIZE = 11;
-
-  // Parser states.
+  /**
+   * Extractor states.
+   */
+  @Retention(RetentionPolicy.SOURCE)
+  @IntDef({STATE_READING_FLV_HEADER, STATE_SKIPPING_TO_TAG_HEADER, STATE_READING_TAG_HEADER,
+      STATE_READING_TAG_DATA})
+  private @interface States {}
   private static final int STATE_READING_FLV_HEADER = 1;
   private static final int STATE_SKIPPING_TO_TAG_HEADER = 2;
   private static final int STATE_READING_TAG_HEADER = 3;
   private static final int STATE_READING_TAG_DATA = 4;
+
+  // Header sizes.
+  private static final int FLV_HEADER_SIZE = 9;
+  private static final int FLV_TAG_HEADER_SIZE = 11;
 
   // Tag types.
   private static final int TAG_TYPE_AUDIO = 8;
@@ -60,33 +70,31 @@ public final class FlvExtractor implements Extractor, SeekMap {
   // FLV container identifier.
   private static final int FLV_TAG = Util.getIntegerCodeForString("FLV");
 
-  // Temporary buffers.
   private final ParsableByteArray scratch;
   private final ParsableByteArray headerBuffer;
   private final ParsableByteArray tagHeaderBuffer;
   private final ParsableByteArray tagData;
+  private final ScriptTagPayloadReader metadataReader;
 
-  // Extractor outputs.
   private ExtractorOutput extractorOutput;
-
-  // State variables.
-  private int parserState;
+  private @States int state;
+  private long mediaTagTimestampOffsetUs;
   private int bytesToNextTagHeader;
-  public int tagType;
-  public int tagDataSize;
-  public long tagTimestampUs;
-
-  // Tags readers.
+  private int tagType;
+  private int tagDataSize;
+  private long tagTimestampUs;
+  private boolean outputSeekMap;
   private AudioTagPayloadReader audioReader;
   private VideoTagPayloadReader videoReader;
-  private ScriptTagPayloadReader metadataReader;
 
   public FlvExtractor() {
     scratch = new ParsableByteArray(4);
     headerBuffer = new ParsableByteArray(FLV_HEADER_SIZE);
     tagHeaderBuffer = new ParsableByteArray(FLV_TAG_HEADER_SIZE);
     tagData = new ParsableByteArray();
-    parserState = STATE_READING_FLV_HEADER;
+    metadataReader = new ScriptTagPayloadReader();
+    state = STATE_READING_FLV_HEADER;
+    mediaTagTimestampOffsetUs = C.TIME_UNSET;
   }
 
   @Override
@@ -126,8 +134,9 @@ public final class FlvExtractor implements Extractor, SeekMap {
   }
 
   @Override
-  public void seek(long position) {
-    parserState = STATE_READING_FLV_HEADER;
+  public void seek(long position, long timeUs) {
+    state = STATE_READING_FLV_HEADER;
+    mediaTagTimestampOffsetUs = C.TIME_UNSET;
     bytesToNextTagHeader = 0;
   }
 
@@ -140,7 +149,7 @@ public final class FlvExtractor implements Extractor, SeekMap {
   public int read(ExtractorInput input, PositionHolder seekPosition) throws IOException,
       InterruptedException {
     while (true) {
-      switch (parserState) {
+      switch (state) {
         case STATE_READING_FLV_HEADER:
           if (!readFlvHeader(input)) {
             return RESULT_END_OF_INPUT;
@@ -159,6 +168,9 @@ public final class FlvExtractor implements Extractor, SeekMap {
             return RESULT_CONTINUE;
           }
           break;
+        default:
+          // Never happens.
+          throw new IllegalStateException();
       }
     }
   }
@@ -183,20 +195,18 @@ public final class FlvExtractor implements Extractor, SeekMap {
     boolean hasAudio = (flags & 0x04) != 0;
     boolean hasVideo = (flags & 0x01) != 0;
     if (hasAudio && audioReader == null) {
-      audioReader = new AudioTagPayloadReader(extractorOutput.track(TAG_TYPE_AUDIO));
+      audioReader = new AudioTagPayloadReader(
+          extractorOutput.track(TAG_TYPE_AUDIO, C.TRACK_TYPE_AUDIO));
     }
     if (hasVideo && videoReader == null) {
-      videoReader = new VideoTagPayloadReader(extractorOutput.track(TAG_TYPE_VIDEO));
-    }
-    if (metadataReader == null) {
-      metadataReader = new ScriptTagPayloadReader(null);
+      videoReader = new VideoTagPayloadReader(
+          extractorOutput.track(TAG_TYPE_VIDEO, C.TRACK_TYPE_VIDEO));
     }
     extractorOutput.endTracks();
-    extractorOutput.seekMap(this);
 
     // We need to skip any additional content in the FLV header, plus the 4 byte previous tag size.
     bytesToNextTagHeader = headerBuffer.readInt() - FLV_HEADER_SIZE + 4;
-    parserState = STATE_SKIPPING_TO_TAG_HEADER;
+    state = STATE_SKIPPING_TO_TAG_HEADER;
     return true;
   }
 
@@ -210,7 +220,7 @@ public final class FlvExtractor implements Extractor, SeekMap {
   private void skipToTagHeader(ExtractorInput input) throws IOException, InterruptedException {
     input.skipFully(bytesToNextTagHeader);
     bytesToNextTagHeader = 0;
-    parserState = STATE_READING_TAG_HEADER;
+    state = STATE_READING_TAG_HEADER;
   }
 
   /**
@@ -233,7 +243,7 @@ public final class FlvExtractor implements Extractor, SeekMap {
     tagTimestampUs = tagHeaderBuffer.readUnsignedInt24();
     tagTimestampUs = ((tagHeaderBuffer.readUnsignedByte() << 24) | tagTimestampUs) * 1000L;
     tagHeaderBuffer.skipBytes(3); // streamId
-    parserState = STATE_READING_TAG_DATA;
+    state = STATE_READING_TAG_DATA;
     return true;
   }
 
@@ -248,17 +258,24 @@ public final class FlvExtractor implements Extractor, SeekMap {
   private boolean readTagData(ExtractorInput input) throws IOException, InterruptedException {
     boolean wasConsumed = true;
     if (tagType == TAG_TYPE_AUDIO && audioReader != null) {
-      audioReader.consume(prepareTagData(input), tagTimestampUs);
+      ensureReadyForMediaOutput();
+      audioReader.consume(prepareTagData(input), mediaTagTimestampOffsetUs + tagTimestampUs);
     } else if (tagType == TAG_TYPE_VIDEO && videoReader != null) {
-      videoReader.consume(prepareTagData(input), tagTimestampUs);
-    } else if (tagType == TAG_TYPE_SCRIPT_DATA && metadataReader != null) {
+      ensureReadyForMediaOutput();
+      videoReader.consume(prepareTagData(input), mediaTagTimestampOffsetUs + tagTimestampUs);
+    } else if (tagType == TAG_TYPE_SCRIPT_DATA && !outputSeekMap) {
       metadataReader.consume(prepareTagData(input), tagTimestampUs);
+      long durationUs = metadataReader.getDurationUs();
+      if (durationUs != C.TIME_UNSET) {
+        extractorOutput.seekMap(new SeekMap.Unseekable(durationUs));
+        outputSeekMap = true;
+      }
     } else {
       input.skipFully(tagDataSize);
       wasConsumed = false;
     }
     bytesToNextTagHeader = 4; // There's a 4 byte previous tag size before the next header.
-    parserState = STATE_SKIPPING_TO_TAG_HEADER;
+    state = STATE_SKIPPING_TO_TAG_HEADER;
     return wasConsumed;
   }
 
@@ -274,21 +291,15 @@ public final class FlvExtractor implements Extractor, SeekMap {
     return tagData;
   }
 
-  // SeekMap implementation.
-
-  @Override
-  public boolean isSeekable() {
-    return false;
-  }
-
-  @Override
-  public long getDurationUs() {
-    return metadataReader.getDurationUs();
-  }
-
-  @Override
-  public long getPosition(long timeUs) {
-    return 0;
+  private void ensureReadyForMediaOutput() {
+    if (!outputSeekMap) {
+      extractorOutput.seekMap(new SeekMap.Unseekable(C.TIME_UNSET));
+      outputSeekMap = true;
+    }
+    if (mediaTagTimestampOffsetUs == C.TIME_UNSET) {
+      mediaTagTimestampOffsetUs =
+          metadataReader.getDurationUs() == C.TIME_UNSET ? -tagTimestampUs : 0;
+    }
   }
 
 }

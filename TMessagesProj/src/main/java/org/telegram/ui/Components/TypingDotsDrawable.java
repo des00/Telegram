@@ -10,15 +10,17 @@ package org.telegram.ui.Components;
 
 import android.graphics.Canvas;
 import android.graphics.ColorFilter;
-import android.graphics.drawable.Drawable;
+import android.graphics.PixelFormat;
 import android.view.animation.DecelerateInterpolator;
 
 import org.telegram.messenger.AndroidUtilities;
 import org.telegram.messenger.NotificationCenter;
+import org.telegram.messenger.UserConfig;
 import org.telegram.ui.ActionBar.Theme;
 
-public class TypingDotsDrawable extends Drawable {
+public class TypingDotsDrawable extends StatusDrawable {
 
+    private int currentAccount = UserConfig.selectedAccount;
     private boolean isChat = false;
     private float[] scales = new float[3];
     private float[] startTimes = new float[] {0, 150, 300};
@@ -89,6 +91,7 @@ public class TypingDotsDrawable extends Drawable {
         } else {
             y = AndroidUtilities.dp(9.3f) + getBounds().top;
         }
+        Theme.chat_statusPaint.setAlpha(255);
         canvas.drawCircle(AndroidUtilities.dp(3), y, scales[0] * AndroidUtilities.density, Theme.chat_statusPaint);
         canvas.drawCircle(AndroidUtilities.dp(9), y, scales[1] * AndroidUtilities.density, Theme.chat_statusPaint);
         canvas.drawCircle(AndroidUtilities.dp(15), y, scales[2] * AndroidUtilities.density, Theme.chat_statusPaint);
@@ -97,7 +100,7 @@ public class TypingDotsDrawable extends Drawable {
 
     private void checkUpdate() {
         if (started) {
-            if (!NotificationCenter.getInstance().isAnimationInProgress()) {
+            if (!NotificationCenter.getInstance(currentAccount).isAnimationInProgress()) {
                 update();
             } else {
                 AndroidUtilities.runOnUIThread(new Runnable() {
@@ -122,7 +125,7 @@ public class TypingDotsDrawable extends Drawable {
 
     @Override
     public int getOpacity() {
-        return 0;
+        return PixelFormat.TRANSPARENT;
     }
 
     @Override

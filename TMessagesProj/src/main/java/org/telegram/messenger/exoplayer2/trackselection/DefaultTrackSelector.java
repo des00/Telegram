@@ -17,267 +17,762 @@ package org.telegram.messenger.exoplayer2.trackselection;
 
 import android.content.Context;
 import android.graphics.Point;
+import android.os.Parcel;
+import android.os.Parcelable;
+import android.support.annotation.NonNull;
+import android.support.annotation.Nullable;
 import android.text.TextUtils;
+import android.util.Pair;
+import android.util.SparseArray;
+import android.util.SparseBooleanArray;
 import org.telegram.messenger.exoplayer2.C;
 import org.telegram.messenger.exoplayer2.ExoPlaybackException;
 import org.telegram.messenger.exoplayer2.Format;
+import org.telegram.messenger.exoplayer2.Player;
+import org.telegram.messenger.exoplayer2.Renderer;
 import org.telegram.messenger.exoplayer2.RendererCapabilities;
+import org.telegram.messenger.exoplayer2.RendererConfiguration;
 import org.telegram.messenger.exoplayer2.source.TrackGroup;
 import org.telegram.messenger.exoplayer2.source.TrackGroupArray;
+import org.telegram.messenger.exoplayer2.upstream.BandwidthMeter;
 import org.telegram.messenger.exoplayer2.util.Assertions;
 import org.telegram.messenger.exoplayer2.util.Util;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * A {@link MappingTrackSelector} that allows configuration of common parameters. It is safe to call
- * the methods of this class from the application thread. See {@link Parameters#Parameters()} for
- * default selection parameters.
+ * A default {@link TrackSelector} suitable for most use cases. Track selections are made according
+ * to configurable {@link Parameters}, which can be set by calling {@link
+ * #setParameters(Parameters)}.
+ *
+ * <h3>Modifying parameters</h3>
+ *
+ * To modify only some aspects of the parameters currently used by a selector, it's possible to
+ * obtain a {@link ParametersBuilder} initialized with the current {@link Parameters}. The desired
+ * modifications can be made on the builder, and the resulting {@link Parameters} can then be built
+ * and set on the selector. For example the following code modifies the parameters to restrict video
+ * track selections to SD, and to prefer German audio tracks:
+ *
+ * <pre>{@code
+ * // Build on the current parameters.
+ * Parameters currentParameters = trackSelector.getParameters();
+ * // Build the resulting parameters.
+ * Parameters newParameters = currentParameters
+ *     .buildUpon()
+ *     .setMaxVideoSizeSd()
+ *     .setPreferredAudioLanguage("deu")
+ *     .build();
+ * // Set the new parameters.
+ * trackSelector.setParameters(newParameters);
+ * }</pre>
+ *
+ * Convenience methods and chaining allow this to be written more concisely as:
+ *
+ * <pre>{@code
+ * trackSelector.setParameters(
+ *     trackSelector
+ *         .buildUponParameters()
+ *         .setMaxVideoSizeSd()
+ *         .setPreferredAudioLanguage("deu"));
+ * }</pre>
+ *
+ * Selection {@link Parameters} support many different options, some of which are described below.
+ *
+ * <h3>Track selection overrides</h3>
+ *
+ * Track selection overrides can be used to select specific tracks. To specify an override for a
+ * renderer, it's first necessary to obtain the tracks that have been mapped to it:
+ *
+ * <pre>{@code
+ * MappedTrackInfo mappedTrackInfo = trackSelector.getCurrentMappedTrackInfo();
+ * TrackGroupArray rendererTrackGroups = mappedTrackInfo == null ? null
+ *     : mappedTrackInfo.getTrackGroups(rendererIndex);
+ * }</pre>
+ *
+ * If {@code rendererTrackGroups} is null then there aren't any currently mapped tracks, and so
+ * setting an override isn't possible. Note that a {@link Player.EventListener} registered on the
+ * player can be used to determine when the current tracks (and therefore the mapping) changes. If
+ * {@code rendererTrackGroups} is non-null then an override can be set. The next step is to query
+ * the properties of the available tracks to determine the {@code groupIndex} and the {@code
+ * trackIndices} within the group it that should be selected. The override can then be specified
+ * using {@link ParametersBuilder#setSelectionOverride}:
+ *
+ * <pre>{@code
+ * SelectionOverride selectionOverride = new SelectionOverride(groupIndex, trackIndices);
+ * trackSelector.setParameters(
+ *     trackSelector
+ *         .buildUponParameters()
+ *         .setSelectionOverride(rendererIndex, rendererTrackGroups, selectionOverride));
+ * }</pre>
+ *
+ * <h3>Disabling renderers</h3>
+ *
+ * Renderers can be disabled using {@link ParametersBuilder#setRendererDisabled}. Disabling a
+ * renderer differs from setting a {@code null} override because the renderer is disabled
+ * unconditionally, whereas a {@code null} override is applied only when the track groups available
+ * to the renderer match the {@link TrackGroupArray} for which it was specified.
+ *
+ * <h3>Constraint based track selection</h3>
+ *
+ * Whilst track selection overrides make it possible to select specific tracks, the recommended way
+ * of controlling which tracks are selected is by specifying constraints. For example consider the
+ * case of wanting to restrict video track selections to SD, and preferring German audio tracks.
+ * Track selection overrides could be used to select specific tracks meeting these criteria, however
+ * a simpler and more flexible approach is to specify these constraints directly:
+ *
+ * <pre>{@code
+ * trackSelector.setParameters(
+ *     trackSelector
+ *         .buildUponParameters()
+ *         .setMaxVideoSizeSd()
+ *         .setPreferredAudioLanguage("deu"));
+ * }</pre>
+ *
+ * There are several benefits to using constraint based track selection instead of specific track
+ * overrides:
+ *
+ * <ul>
+ *   <li>You can specify constraints before knowing what tracks the media provides. This can
+ *       simplify track selection code (e.g. you don't have to listen for changes in the available
+ *       tracks before configuring the selector).
+ *   <li>Constraints can be applied consistently across all periods in a complex piece of media,
+ *       even if those periods contain different tracks. In contrast, a specific track override is
+ *       only applied to periods whose tracks match those for which the override was set.
+ * </ul>
+ *
+ * <h3>Tunneling</h3>
+ *
+ * Tunneled playback can be enabled in cases where the combination of renderers and selected tracks
+ * support it. Tunneled playback is enabled by passing an audio session ID to {@link
+ * ParametersBuilder#setTunnelingAudioSessionId(int)}.
  */
 public class DefaultTrackSelector extends MappingTrackSelector {
 
   /**
-   * Holder for available configurations for the {@link DefaultTrackSelector}.
+   * A builder for {@link Parameters}.
    */
-  public static final class Parameters {
+  public static final class ParametersBuilder {
 
-    // Audio.
-    public final String preferredAudioLanguage;
+    private final SparseArray<Map<TrackGroupArray, SelectionOverride>> selectionOverrides;
+    private final SparseBooleanArray rendererDisabledFlags;
 
-    // Text.
-    public final String preferredTextLanguage;
-
-    // Video.
-    public final boolean allowMixedMimeAdaptiveness;
-    public final boolean allowNonSeamlessAdaptiveness;
-    public final int maxVideoWidth;
-    public final int maxVideoHeight;
-    public final boolean exceedVideoConstraintsIfNecessary;
-    public final int viewportWidth;
-    public final int viewportHeight;
-    public final boolean orientationMayChange;
+    private String preferredAudioLanguage;
+    private String preferredTextLanguage;
+    private boolean selectUndeterminedTextLanguage;
+    private int disabledTextTrackSelectionFlags;
+    private boolean forceLowestBitrate;
+    private boolean allowMixedMimeAdaptiveness;
+    private boolean allowNonSeamlessAdaptiveness;
+    private int maxVideoWidth;
+    private int maxVideoHeight;
+    private int maxVideoBitrate;
+    private boolean exceedVideoConstraintsIfNecessary;
+    private boolean exceedRendererCapabilitiesIfNecessary;
+    private int viewportWidth;
+    private int viewportHeight;
+    private boolean viewportOrientationMayChange;
+    private int tunnelingAudioSessionId;
 
     /**
-     * Constructor with default selection parameters:
-     * <ul>
-     *   <li>No preferred audio language is set.</li>
-     *   <li>No preferred text language is set.</li>
-     *   <li>Adaptation between different mime types is not allowed.</li>
-     *   <li>Non seamless adaptation is allowed.</li>
-     *   <li>No max limit for video width/height.</li>
-     *   <li>Video constraints are ignored if no supported selection can be made otherwise.</li>
-     *   <li>No viewport width/height constraints are set.</li>
-     * </ul>
+     * Creates a builder obtaining the initial values from {@link Parameters#DEFAULT}.
      */
-    public Parameters() {
-      this(null, null, false, true, Integer.MAX_VALUE, Integer.MAX_VALUE, true, Integer.MAX_VALUE,
-          Integer.MAX_VALUE, true);
+    public ParametersBuilder() {
+      this(Parameters.DEFAULT);
     }
 
     /**
-     * @param preferredAudioLanguage The preferred language for audio, as well as for forced text
-     *     tracks as defined by RFC 5646. {@code null} to select the default track, or first track
-     *     if there's no default.
-     * @param preferredTextLanguage The preferred language for text tracks as defined by RFC 5646.
-     *     {@code null} to select the default track, or first track if there's no default.
-     * @param allowMixedMimeAdaptiveness Whether to allow selections to contain mixed mime types.
-     * @param allowNonSeamlessAdaptiveness Whether non-seamless adaptation is allowed.
-     * @param maxVideoWidth Maximum allowed video width.
-     * @param maxVideoHeight Maximum allowed video height.
-     * @param exceedVideoConstraintsIfNecessary True to ignore video constraints when no selections
-     *     can be made otherwise. False to force constraints anyway.
-     * @param viewportWidth Viewport width in pixels.
-     * @param viewportHeight Viewport height in pixels.
-     * @param orientationMayChange Whether orientation may change during playback.
+     * @param initialValues The {@link Parameters} from which the initial values of the builder are
+     *     obtained.
      */
-    public Parameters(String preferredAudioLanguage, String preferredTextLanguage,
-        boolean allowMixedMimeAdaptiveness, boolean allowNonSeamlessAdaptiveness,
-        int maxVideoWidth, int maxVideoHeight, boolean exceedVideoConstraintsIfNecessary,
-        int viewportWidth, int viewportHeight, boolean orientationMayChange) {
+    private ParametersBuilder(Parameters initialValues) {
+      selectionOverrides = cloneSelectionOverrides(initialValues.selectionOverrides);
+      rendererDisabledFlags = initialValues.rendererDisabledFlags.clone();
+      preferredAudioLanguage = initialValues.preferredAudioLanguage;
+      preferredTextLanguage = initialValues.preferredTextLanguage;
+      selectUndeterminedTextLanguage = initialValues.selectUndeterminedTextLanguage;
+      disabledTextTrackSelectionFlags = initialValues.disabledTextTrackSelectionFlags;
+      forceLowestBitrate = initialValues.forceLowestBitrate;
+      allowMixedMimeAdaptiveness = initialValues.allowMixedMimeAdaptiveness;
+      allowNonSeamlessAdaptiveness = initialValues.allowNonSeamlessAdaptiveness;
+      maxVideoWidth = initialValues.maxVideoWidth;
+      maxVideoHeight = initialValues.maxVideoHeight;
+      maxVideoBitrate = initialValues.maxVideoBitrate;
+      exceedVideoConstraintsIfNecessary = initialValues.exceedVideoConstraintsIfNecessary;
+      exceedRendererCapabilitiesIfNecessary = initialValues.exceedRendererCapabilitiesIfNecessary;
+      viewportWidth = initialValues.viewportWidth;
+      viewportHeight = initialValues.viewportHeight;
+      viewportOrientationMayChange = initialValues.viewportOrientationMayChange;
+      tunnelingAudioSessionId = initialValues.tunnelingAudioSessionId;
+    }
+
+    /**
+     * See {@link Parameters#preferredAudioLanguage}.
+     *
+     * @return This builder.
+     */
+    public ParametersBuilder setPreferredAudioLanguage(String preferredAudioLanguage) {
       this.preferredAudioLanguage = preferredAudioLanguage;
+      return this;
+    }
+
+    /**
+     * See {@link Parameters#preferredTextLanguage}.
+     *
+     * @return This builder.
+     */
+    public ParametersBuilder setPreferredTextLanguage(String preferredTextLanguage) {
       this.preferredTextLanguage = preferredTextLanguage;
+      return this;
+    }
+
+    /**
+     * See {@link Parameters#selectUndeterminedTextLanguage}.
+     *
+     * @return This builder.
+     */
+    public ParametersBuilder setSelectUndeterminedTextLanguage(
+        boolean selectUndeterminedTextLanguage) {
+      this.selectUndeterminedTextLanguage = selectUndeterminedTextLanguage;
+      return this;
+    }
+
+    /**
+     * See {@link Parameters#disabledTextTrackSelectionFlags}.
+     *
+     * @return This builder.
+     */
+    public ParametersBuilder setDisabledTextTrackSelectionFlags(
+        int disabledTextTrackSelectionFlags) {
+      this.disabledTextTrackSelectionFlags = disabledTextTrackSelectionFlags;
+      return this;
+    }
+
+    /**
+     * See {@link Parameters#forceLowestBitrate}.
+     *
+     * @return This builder.
+     */
+    public ParametersBuilder setForceLowestBitrate(boolean forceLowestBitrate) {
+      this.forceLowestBitrate = forceLowestBitrate;
+      return this;
+    }
+
+    /**
+     * See {@link Parameters#allowMixedMimeAdaptiveness}.
+     *
+     * @return This builder.
+     */
+    public ParametersBuilder setAllowMixedMimeAdaptiveness(boolean allowMixedMimeAdaptiveness) {
+      this.allowMixedMimeAdaptiveness = allowMixedMimeAdaptiveness;
+      return this;
+    }
+
+    /**
+     * See {@link Parameters#allowNonSeamlessAdaptiveness}.
+     *
+     * @return This builder.
+     */
+    public ParametersBuilder setAllowNonSeamlessAdaptiveness(boolean allowNonSeamlessAdaptiveness) {
+      this.allowNonSeamlessAdaptiveness = allowNonSeamlessAdaptiveness;
+      return this;
+    }
+
+    /**
+     * Equivalent to {@link #setMaxVideoSize setMaxVideoSize(1279, 719)}.
+     *
+     * @return This builder.
+     */
+    public ParametersBuilder setMaxVideoSizeSd() {
+      return setMaxVideoSize(1279, 719);
+    }
+
+    /**
+     * Equivalent to {@link #setMaxVideoSize setMaxVideoSize(Integer.MAX_VALUE, Integer.MAX_VALUE)}.
+     *
+     * @return This builder.
+     */
+    public ParametersBuilder clearVideoSizeConstraints() {
+      return setMaxVideoSize(Integer.MAX_VALUE, Integer.MAX_VALUE);
+    }
+
+    /**
+     * See {@link Parameters#maxVideoWidth} and {@link Parameters#maxVideoHeight}.
+     *
+     * @return This builder.
+     */
+    public ParametersBuilder setMaxVideoSize(int maxVideoWidth, int maxVideoHeight) {
+      this.maxVideoWidth = maxVideoWidth;
+      this.maxVideoHeight = maxVideoHeight;
+      return this;
+    }
+
+    /**
+     * See {@link Parameters#maxVideoBitrate}.
+     *
+     * @return This builder.
+     */
+    public ParametersBuilder setMaxVideoBitrate(int maxVideoBitrate) {
+      this.maxVideoBitrate = maxVideoBitrate;
+      return this;
+    }
+
+    /**
+     * See {@link Parameters#exceedVideoConstraintsIfNecessary}.
+     *
+     * @return This builder.
+     */
+    public ParametersBuilder setExceedVideoConstraintsIfNecessary(
+        boolean exceedVideoConstraintsIfNecessary) {
+      this.exceedVideoConstraintsIfNecessary = exceedVideoConstraintsIfNecessary;
+      return this;
+    }
+
+    /**
+     * See {@link Parameters#exceedRendererCapabilitiesIfNecessary}.
+     *
+     * @return This builder.
+     */
+    public ParametersBuilder setExceedRendererCapabilitiesIfNecessary(
+        boolean exceedRendererCapabilitiesIfNecessary) {
+      this.exceedRendererCapabilitiesIfNecessary = exceedRendererCapabilitiesIfNecessary;
+      return this;
+    }
+
+    /**
+     * Equivalent to invoking {@link #setViewportSize} with the viewport size obtained from
+     * {@link Util#getPhysicalDisplaySize(Context)}.
+     *
+     * @param context The context to obtain the viewport size from.
+     * @param viewportOrientationMayChange See {@link #viewportOrientationMayChange}.
+     * @return This builder.
+     */
+    public ParametersBuilder setViewportSizeToPhysicalDisplaySize(Context context,
+        boolean viewportOrientationMayChange) {
+      // Assume the viewport is fullscreen.
+      Point viewportSize = Util.getPhysicalDisplaySize(context);
+      return setViewportSize(viewportSize.x, viewportSize.y, viewportOrientationMayChange);
+    }
+
+    /**
+     * Equivalent to
+     * {@link #setViewportSize setViewportSize(Integer.MAX_VALUE, Integer.MAX_VALUE, true)}.
+     *
+     * @return This builder.
+     */
+    public ParametersBuilder clearViewportSizeConstraints() {
+      return setViewportSize(Integer.MAX_VALUE, Integer.MAX_VALUE, true);
+    }
+
+    /**
+     * See {@link Parameters#viewportWidth}, {@link Parameters#maxVideoHeight} and
+     * {@link Parameters#viewportOrientationMayChange}.
+     *
+     * @return This builder.
+     */
+    public ParametersBuilder setViewportSize(int viewportWidth, int viewportHeight,
+        boolean viewportOrientationMayChange) {
+      this.viewportWidth = viewportWidth;
+      this.viewportHeight = viewportHeight;
+      this.viewportOrientationMayChange = viewportOrientationMayChange;
+      return this;
+    }
+
+    /**
+     * Sets whether the renderer at the specified index is disabled. Disabling a renderer prevents
+     * the selector from selecting any tracks for it.
+     *
+     * @param rendererIndex The renderer index.
+     * @param disabled Whether the renderer is disabled.
+     */
+    public final ParametersBuilder setRendererDisabled(int rendererIndex, boolean disabled) {
+      if (rendererDisabledFlags.get(rendererIndex) == disabled) {
+        // The disabled flag is unchanged.
+        return this;
+      }
+      // Only true values are placed in the array to make it easier to check for equality.
+      if (disabled) {
+        rendererDisabledFlags.put(rendererIndex, true);
+      } else {
+        rendererDisabledFlags.delete(rendererIndex);
+      }
+      return this;
+    }
+
+    /**
+     * Overrides the track selection for the renderer at the specified index.
+     *
+     * <p>When the {@link TrackGroupArray} mapped to the renderer matches the one provided, the
+     * override is applied. When the {@link TrackGroupArray} does not match, the override has no
+     * effect. The override replaces any previous override for the specified {@link TrackGroupArray}
+     * for the specified {@link Renderer}.
+     *
+     * <p>Passing a {@code null} override will cause the renderer to be disabled when the {@link
+     * TrackGroupArray} mapped to it matches the one provided. When the {@link TrackGroupArray} does
+     * not match a {@code null} override has no effect. Hence a {@code null} override differs from
+     * disabling the renderer using {@link #setRendererDisabled(int, boolean)} because the renderer
+     * is disabled conditionally on the {@link TrackGroupArray} mapped to it, where-as {@link
+     * #setRendererDisabled(int, boolean)} disables the renderer unconditionally.
+     *
+     * <p>To remove overrides use {@link #clearSelectionOverride(int, TrackGroupArray)}, {@link
+     * #clearSelectionOverrides(int)} or {@link #clearSelectionOverrides()}.
+     *
+     * @param rendererIndex The renderer index.
+     * @param groups The {@link TrackGroupArray} for which the override should be applied.
+     * @param override The override.
+     */
+    public final ParametersBuilder setSelectionOverride(
+        int rendererIndex, TrackGroupArray groups, SelectionOverride override) {
+      Map<TrackGroupArray, SelectionOverride> overrides = selectionOverrides.get(rendererIndex);
+      if (overrides == null) {
+        overrides = new HashMap<>();
+        selectionOverrides.put(rendererIndex, overrides);
+      }
+      if (overrides.containsKey(groups) && Util.areEqual(overrides.get(groups), override)) {
+        // The override is unchanged.
+        return this;
+      }
+      overrides.put(groups, override);
+      return this;
+    }
+
+    /**
+     * Clears a track selection override for the specified renderer and {@link TrackGroupArray}.
+     *
+     * @param rendererIndex The renderer index.
+     * @param groups The {@link TrackGroupArray} for which the override should be cleared.
+     */
+    public final ParametersBuilder clearSelectionOverride(
+        int rendererIndex, TrackGroupArray groups) {
+      Map<TrackGroupArray, SelectionOverride> overrides = selectionOverrides.get(rendererIndex);
+      if (overrides == null || !overrides.containsKey(groups)) {
+        // Nothing to clear.
+        return this;
+      }
+      overrides.remove(groups);
+      if (overrides.isEmpty()) {
+        selectionOverrides.remove(rendererIndex);
+      }
+      return this;
+    }
+
+    /**
+     * Clears all track selection overrides for the specified renderer.
+     *
+     * @param rendererIndex The renderer index.
+     */
+    public final ParametersBuilder clearSelectionOverrides(int rendererIndex) {
+      Map<TrackGroupArray, SelectionOverride> overrides = selectionOverrides.get(rendererIndex);
+      if (overrides == null || overrides.isEmpty()) {
+        // Nothing to clear.
+        return this;
+      }
+      selectionOverrides.remove(rendererIndex);
+      return this;
+    }
+
+    /** Clears all track selection overrides for all renderers. */
+    public final ParametersBuilder clearSelectionOverrides() {
+      if (selectionOverrides.size() == 0) {
+        // Nothing to clear.
+        return this;
+      }
+      selectionOverrides.clear();
+      return this;
+    }
+
+    /**
+     * Enables or disables tunneling. To enable tunneling, pass an audio session id to use when in
+     * tunneling mode. Session ids can be generated using {@link
+     * C#generateAudioSessionIdV21(Context)}. To disable tunneling pass {@link
+     * C#AUDIO_SESSION_ID_UNSET}. Tunneling will only be activated if it's both enabled and
+     * supported by the audio and video renderers for the selected tracks.
+     *
+     * @param tunnelingAudioSessionId The audio session id to use when tunneling, or {@link
+     *     C#AUDIO_SESSION_ID_UNSET} to disable tunneling.
+     */
+    public ParametersBuilder setTunnelingAudioSessionId(int tunnelingAudioSessionId) {
+      if (this.tunnelingAudioSessionId != tunnelingAudioSessionId) {
+        this.tunnelingAudioSessionId = tunnelingAudioSessionId;
+        return this;
+      }
+      return this;
+    }
+
+    /**
+     * Builds a {@link Parameters} instance with the selected values.
+     */
+    public Parameters build() {
+      return new Parameters(
+          selectionOverrides,
+          rendererDisabledFlags,
+          preferredAudioLanguage,
+          preferredTextLanguage,
+          selectUndeterminedTextLanguage,
+          disabledTextTrackSelectionFlags,
+          forceLowestBitrate,
+          allowMixedMimeAdaptiveness,
+          allowNonSeamlessAdaptiveness,
+          maxVideoWidth,
+          maxVideoHeight,
+          maxVideoBitrate,
+          exceedVideoConstraintsIfNecessary,
+          exceedRendererCapabilitiesIfNecessary,
+          viewportWidth,
+          viewportHeight,
+          viewportOrientationMayChange,
+          tunnelingAudioSessionId);
+    }
+
+    private static SparseArray<Map<TrackGroupArray, SelectionOverride>> cloneSelectionOverrides(
+        SparseArray<Map<TrackGroupArray, SelectionOverride>> selectionOverrides) {
+      SparseArray<Map<TrackGroupArray, SelectionOverride>> clone = new SparseArray<>();
+      for (int i = 0; i < selectionOverrides.size(); i++) {
+        clone.put(selectionOverrides.keyAt(i), new HashMap<>(selectionOverrides.valueAt(i)));
+      }
+      return clone;
+    }
+  }
+
+  /** Constraint parameters for {@link DefaultTrackSelector}. */
+  public static final class Parameters implements Parcelable {
+
+    /**
+     * An instance with default values:
+     *
+     * <ul>
+     *   <li>No preferred audio language.
+     *   <li>No preferred text language.
+     *   <li>Text tracks with undetermined language are not selected if no track with {@link
+     *       #preferredTextLanguage} is available.
+     *   <li>All selection flags are considered for text track selections.
+     *   <li>Lowest bitrate track selections are not forced.
+     *   <li>Adaptation between different mime types is not allowed.
+     *   <li>Non seamless adaptation is allowed.
+     *   <li>No max limit for video width/height.
+     *   <li>No max video bitrate.
+     *   <li>Video constraints are exceeded if no supported selection can be made otherwise.
+     *   <li>Renderer capabilities are exceeded if no supported selection can be made.
+     *   <li>No viewport constraints.
+     * </ul>
+     */
+    public static final Parameters DEFAULT = new Parameters();
+
+    // Per renderer overrides.
+
+    private final SparseArray<Map<TrackGroupArray, SelectionOverride>> selectionOverrides;
+    private final SparseBooleanArray rendererDisabledFlags;
+
+    // Audio
+    /**
+     * The preferred language for audio, as well as for forced text tracks, as an ISO 639-2/T tag.
+     * {@code null} selects the default track, or the first track if there's no default.
+     */
+    public final String preferredAudioLanguage;
+
+    // Text
+    /**
+     * The preferred language for text tracks as an ISO 639-2/T tag. {@code null} selects the
+     * default track if there is one, or no track otherwise.
+     */
+    public final String preferredTextLanguage;
+    /**
+     * Whether a text track with undetermined language should be selected if no track with
+     * {@link #preferredTextLanguage} is available, or if {@link #preferredTextLanguage} is unset.
+     */
+    public final boolean selectUndeterminedTextLanguage;
+    /**
+     * Bitmask of selection flags that are disabled for text track selections. See {@link
+     * C.SelectionFlags}.
+     */
+    public final int disabledTextTrackSelectionFlags;
+
+    // Video
+    /**
+     * Maximum allowed video width.
+     */
+    public final int maxVideoWidth;
+    /**
+     * Maximum allowed video height.
+     */
+    public final int maxVideoHeight;
+    /**
+     * Maximum video bitrate.
+     */
+    public final int maxVideoBitrate;
+    /**
+     * Whether to exceed video constraints when no selection can be made otherwise.
+     */
+    public final boolean exceedVideoConstraintsIfNecessary;
+    /**
+     * Viewport width in pixels. Constrains video tracks selections for adaptive playbacks so that
+     * only tracks suitable for the viewport are selected.
+     */
+    public final int viewportWidth;
+    /**
+     * Viewport height in pixels. Constrains video tracks selections for adaptive playbacks so that
+     * only tracks suitable for the viewport are selected.
+     */
+    public final int viewportHeight;
+    /**
+     * Whether the viewport orientation may change during playback. Constrains video tracks
+     * selections for adaptive playbacks so that only tracks suitable for the viewport are selected.
+     */
+    public final boolean viewportOrientationMayChange;
+
+    // General
+    /**
+     * Whether to force selection of the single lowest bitrate audio and video tracks that comply
+     * with all other constraints.
+     */
+    public final boolean forceLowestBitrate;
+    /**
+     * Whether to allow adaptive selections containing mixed mime types.
+     */
+    public final boolean allowMixedMimeAdaptiveness;
+    /**
+     * Whether to allow adaptive selections where adaptation may not be completely seamless.
+     */
+    public final boolean allowNonSeamlessAdaptiveness;
+    /**
+     * Whether to exceed renderer capabilities when no selection can be made otherwise.
+     */
+    public final boolean exceedRendererCapabilitiesIfNecessary;
+    /**
+     * The audio session id to use when tunneling, or {@link C#AUDIO_SESSION_ID_UNSET} if tunneling
+     * is not to be enabled.
+     */
+    public final int tunnelingAudioSessionId;
+
+    private Parameters() {
+      this(
+          new SparseArray<Map<TrackGroupArray, SelectionOverride>>(),
+          new SparseBooleanArray(),
+          null,
+          null,
+          false,
+          0,
+          false,
+          false,
+          true,
+          Integer.MAX_VALUE,
+          Integer.MAX_VALUE,
+          Integer.MAX_VALUE,
+          true,
+          true,
+          Integer.MAX_VALUE,
+          Integer.MAX_VALUE,
+          true,
+          C.AUDIO_SESSION_ID_UNSET);
+    }
+
+    /* package */ Parameters(
+        SparseArray<Map<TrackGroupArray, SelectionOverride>> selectionOverrides,
+        SparseBooleanArray rendererDisabledFlags,
+        String preferredAudioLanguage,
+        String preferredTextLanguage,
+        boolean selectUndeterminedTextLanguage,
+        int disabledTextTrackSelectionFlags,
+        boolean forceLowestBitrate,
+        boolean allowMixedMimeAdaptiveness,
+        boolean allowNonSeamlessAdaptiveness,
+        int maxVideoWidth,
+        int maxVideoHeight,
+        int maxVideoBitrate,
+        boolean exceedVideoConstraintsIfNecessary,
+        boolean exceedRendererCapabilitiesIfNecessary,
+        int viewportWidth,
+        int viewportHeight,
+        boolean viewportOrientationMayChange,
+        int tunnelingAudioSessionId) {
+      this.selectionOverrides = selectionOverrides;
+      this.rendererDisabledFlags = rendererDisabledFlags;
+      this.preferredAudioLanguage = Util.normalizeLanguageCode(preferredAudioLanguage);
+      this.preferredTextLanguage = Util.normalizeLanguageCode(preferredTextLanguage);
+      this.selectUndeterminedTextLanguage = selectUndeterminedTextLanguage;
+      this.disabledTextTrackSelectionFlags = disabledTextTrackSelectionFlags;
+      this.forceLowestBitrate = forceLowestBitrate;
       this.allowMixedMimeAdaptiveness = allowMixedMimeAdaptiveness;
       this.allowNonSeamlessAdaptiveness = allowNonSeamlessAdaptiveness;
       this.maxVideoWidth = maxVideoWidth;
       this.maxVideoHeight = maxVideoHeight;
+      this.maxVideoBitrate = maxVideoBitrate;
       this.exceedVideoConstraintsIfNecessary = exceedVideoConstraintsIfNecessary;
+      this.exceedRendererCapabilitiesIfNecessary = exceedRendererCapabilitiesIfNecessary;
       this.viewportWidth = viewportWidth;
       this.viewportHeight = viewportHeight;
-      this.orientationMayChange = orientationMayChange;
+      this.viewportOrientationMayChange = viewportOrientationMayChange;
+      this.tunnelingAudioSessionId = tunnelingAudioSessionId;
+    }
+
+    /* package */ Parameters(Parcel in) {
+      this.selectionOverrides = readSelectionOverrides(in);
+      this.rendererDisabledFlags = in.readSparseBooleanArray();
+      this.preferredAudioLanguage = in.readString();
+      this.preferredTextLanguage = in.readString();
+      this.selectUndeterminedTextLanguage = Util.readBoolean(in);
+      this.disabledTextTrackSelectionFlags = in.readInt();
+      this.forceLowestBitrate = Util.readBoolean(in);
+      this.allowMixedMimeAdaptiveness = Util.readBoolean(in);
+      this.allowNonSeamlessAdaptiveness = Util.readBoolean(in);
+      this.maxVideoWidth = in.readInt();
+      this.maxVideoHeight = in.readInt();
+      this.maxVideoBitrate = in.readInt();
+      this.exceedVideoConstraintsIfNecessary = Util.readBoolean(in);
+      this.exceedRendererCapabilitiesIfNecessary = Util.readBoolean(in);
+      this.viewportWidth = in.readInt();
+      this.viewportHeight = in.readInt();
+      this.viewportOrientationMayChange = Util.readBoolean(in);
+      this.tunnelingAudioSessionId = in.readInt();
     }
 
     /**
-     * Returns a {@link Parameters} instance with the provided preferred language for audio and
-     * forced text tracks.
+     * Returns whether the renderer is disabled.
      *
-     * @param preferredAudioLanguage The preferred language as defined by RFC 5646. {@code null} to
-     *     select the default track, or first track if there's no default.
-     * @return A {@link Parameters} instance with the provided preferred language for audio and
-     *     forced text tracks.
+     * @param rendererIndex The renderer index.
+     * @return Whether the renderer is disabled.
      */
-    public Parameters withPreferredAudioLanguage(String preferredAudioLanguage) {
-      preferredAudioLanguage = Util.normalizeLanguageCode(preferredAudioLanguage);
-      if (TextUtils.equals(preferredAudioLanguage, this.preferredAudioLanguage)) {
-        return this;
-      }
-      return new Parameters(preferredAudioLanguage, preferredTextLanguage,
-          allowMixedMimeAdaptiveness, allowNonSeamlessAdaptiveness, maxVideoWidth, maxVideoHeight,
-          exceedVideoConstraintsIfNecessary, viewportWidth, viewportHeight, orientationMayChange);
+    public final boolean getRendererDisabled(int rendererIndex) {
+      return rendererDisabledFlags.get(rendererIndex);
     }
 
     /**
-     * Returns a {@link Parameters} instance with the provided preferred language for text tracks.
+     * Returns whether there is an override for the specified renderer and {@link TrackGroupArray}.
      *
-     * @param preferredTextLanguage The preferred language as defined by RFC 5646. {@code null} to
-     *     select the default track, or no track if there's no default.
-     * @return A {@link Parameters} instance with the provided preferred language for text tracks.
+     * @param rendererIndex The renderer index.
+     * @param groups The {@link TrackGroupArray}.
+     * @return Whether there is an override.
      */
-    public Parameters withPreferredTextLanguage(String preferredTextLanguage) {
-      preferredTextLanguage = Util.normalizeLanguageCode(preferredTextLanguage);
-      if (TextUtils.equals(preferredTextLanguage, this.preferredTextLanguage)) {
-        return this;
-      }
-      return new Parameters(preferredAudioLanguage, preferredTextLanguage,
-          allowMixedMimeAdaptiveness, allowNonSeamlessAdaptiveness, maxVideoWidth,
-          maxVideoHeight, exceedVideoConstraintsIfNecessary, viewportWidth, viewportHeight,
-          orientationMayChange);
+    public final boolean hasSelectionOverride(int rendererIndex, TrackGroupArray groups) {
+      Map<TrackGroupArray, SelectionOverride> overrides = selectionOverrides.get(rendererIndex);
+      return overrides != null && overrides.containsKey(groups);
     }
 
     /**
-     * Returns a {@link Parameters} instance with the provided mixed mime adaptiveness allowance.
+     * Returns the override for the specified renderer and {@link TrackGroupArray}.
      *
-     * @param allowMixedMimeAdaptiveness Whether to allow selections to contain mixed mime types.
-     * @return A {@link Parameters} instance with the provided mixed mime adaptiveness allowance.
+     * @param rendererIndex The renderer index.
+     * @param groups The {@link TrackGroupArray}.
+     * @return The override, or null if no override exists.
      */
-    public Parameters withAllowMixedMimeAdaptiveness(boolean allowMixedMimeAdaptiveness) {
-      if (allowMixedMimeAdaptiveness == this.allowMixedMimeAdaptiveness) {
-        return this;
-      }
-      return new Parameters(preferredAudioLanguage, preferredTextLanguage,
-          allowMixedMimeAdaptiveness, allowNonSeamlessAdaptiveness, maxVideoWidth,
-          maxVideoHeight, exceedVideoConstraintsIfNecessary, viewportWidth, viewportHeight,
-          orientationMayChange);
+    public final SelectionOverride getSelectionOverride(int rendererIndex, TrackGroupArray groups) {
+      Map<TrackGroupArray, SelectionOverride> overrides = selectionOverrides.get(rendererIndex);
+      return overrides != null ? overrides.get(groups) : null;
     }
 
     /**
-     * Returns a {@link Parameters} instance with the provided seamless adaptiveness allowance.
-     *
-     * @param allowNonSeamlessAdaptiveness Whether non-seamless adaptation is allowed.
-     * @return A {@link Parameters} instance with the provided seamless adaptiveness allowance.
+     * Creates a new {@link ParametersBuilder}, copying the initial values from this instance.
      */
-    public Parameters withAllowNonSeamlessAdaptiveness(boolean allowNonSeamlessAdaptiveness) {
-      if (allowNonSeamlessAdaptiveness == this.allowNonSeamlessAdaptiveness) {
-        return this;
-      }
-      return new Parameters(preferredAudioLanguage, preferredTextLanguage,
-          allowMixedMimeAdaptiveness, allowNonSeamlessAdaptiveness, maxVideoWidth,
-          maxVideoHeight, exceedVideoConstraintsIfNecessary, viewportWidth, viewportHeight,
-          orientationMayChange);
-    }
-
-    /**
-     * Returns a {@link Parameters} instance with the provided max video size.
-     *
-     * @param maxVideoWidth The max video width.
-     * @param maxVideoHeight The max video width.
-     * @return A {@link Parameters} instance with the provided max video size.
-     */
-    public Parameters withMaxVideoSize(int maxVideoWidth, int maxVideoHeight) {
-      if (maxVideoWidth == this.maxVideoWidth && maxVideoHeight == this.maxVideoHeight) {
-        return this;
-      }
-      return new Parameters(preferredAudioLanguage, preferredTextLanguage,
-          allowMixedMimeAdaptiveness, allowNonSeamlessAdaptiveness, maxVideoWidth,
-          maxVideoHeight, exceedVideoConstraintsIfNecessary, viewportWidth, viewportHeight,
-          orientationMayChange);
-    }
-
-    /**
-     * Equivalent to {@code withMaxVideoSize(1279, 719)}.
-     *
-     * @return A {@link Parameters} instance with maximum standard definition as maximum video size.
-     */
-    public Parameters withMaxVideoSizeSd() {
-      return withMaxVideoSize(1279, 719);
-    }
-
-    /**
-     * Equivalent to {@code withMaxVideoSize(Integer.MAX_VALUE, Integer.MAX_VALUE)}.
-     *
-     * @return A {@link Parameters} instance without video size constraints.
-     */
-    public Parameters withoutVideoSizeConstraints() {
-      return withMaxVideoSize(Integer.MAX_VALUE, Integer.MAX_VALUE);
-    }
-
-    /**
-     * Returns a {@link Parameters} instance with the provided
-     * {@code exceedVideoConstraintsIfNecessary} value.
-     *
-     * @param exceedVideoConstraintsIfNecessary True to ignore video constraints when no selections
-     *     can be made otherwise. False to force constraints anyway.
-     * @return A {@link Parameters} instance with the provided
-     *     {@code exceedVideoConstraintsIfNecessary} value.
-     */
-    public Parameters withExceedVideoConstraintsIfNecessary(
-        boolean exceedVideoConstraintsIfNecessary) {
-      if (exceedVideoConstraintsIfNecessary == this.exceedVideoConstraintsIfNecessary) {
-        return this;
-      }
-      return new Parameters(preferredAudioLanguage, preferredTextLanguage,
-          allowMixedMimeAdaptiveness, allowNonSeamlessAdaptiveness, maxVideoWidth,
-          maxVideoHeight, exceedVideoConstraintsIfNecessary, viewportWidth, viewportHeight,
-          orientationMayChange);
-    }
-
-    /**
-     * Returns a {@link Parameters} instance with the provided viewport size.
-     *
-     * @param viewportWidth Viewport width in pixels.
-     * @param viewportHeight Viewport height in pixels.
-     * @param orientationMayChange Whether orientation may change during playback.
-     * @return A {@link Parameters} instance with the provided viewport size.
-     */
-    public Parameters withViewportSize(int viewportWidth, int viewportHeight,
-        boolean orientationMayChange) {
-      if (viewportWidth == this.viewportWidth && viewportHeight == this.viewportHeight
-          && orientationMayChange == this.orientationMayChange) {
-        return this;
-      }
-      return new Parameters(preferredAudioLanguage, preferredTextLanguage,
-          allowMixedMimeAdaptiveness, allowNonSeamlessAdaptiveness, maxVideoWidth,
-          maxVideoHeight, exceedVideoConstraintsIfNecessary, viewportWidth, viewportHeight,
-          orientationMayChange);
-    }
-
-    /**
-     * Returns a {@link Parameters} instance where the viewport size is obtained from the provided
-     * {@link Context}.
-     *
-     * @param context The context to obtain the viewport size from.
-     * @param orientationMayChange Whether orientation may change during playback.
-     * @return A {@link Parameters} instance where the viewport size is obtained from the provided
-     *     {@link Context}.
-     */
-    public Parameters withViewportSizeFromContext(Context context, boolean orientationMayChange) {
-      // Assume the viewport is fullscreen.
-      Point viewportSize = Util.getPhysicalDisplaySize(context);
-      return withViewportSize(viewportSize.x, viewportSize.y, orientationMayChange);
-    }
-
-    /**
-     * Equivalent to {@code withViewportSize(Integer.MAX_VALUE, Integer.MAX_VALUE, true)}.
-     *
-     * @return A {@link Parameters} instance without viewport size constraints.
-     */
-    public Parameters withoutViewportSizeConstraints() {
-      return withViewportSize(Integer.MAX_VALUE, Integer.MAX_VALUE, true);
+    public ParametersBuilder buildUpon() {
+      return new ParametersBuilder(this);
     }
 
     @Override
-    public boolean equals(Object obj) {
+    public boolean equals(@Nullable Object obj) {
       if (this == obj) {
         return true;
       }
@@ -285,31 +780,257 @@ public class DefaultTrackSelector extends MappingTrackSelector {
         return false;
       }
       Parameters other = (Parameters) obj;
-      return allowMixedMimeAdaptiveness == other.allowMixedMimeAdaptiveness
+      return selectUndeterminedTextLanguage == other.selectUndeterminedTextLanguage
+          && disabledTextTrackSelectionFlags == other.disabledTextTrackSelectionFlags
+          && forceLowestBitrate == other.forceLowestBitrate
+          && allowMixedMimeAdaptiveness == other.allowMixedMimeAdaptiveness
           && allowNonSeamlessAdaptiveness == other.allowNonSeamlessAdaptiveness
-          && maxVideoWidth == other.maxVideoWidth && maxVideoHeight == other.maxVideoHeight
+          && maxVideoWidth == other.maxVideoWidth
+          && maxVideoHeight == other.maxVideoHeight
           && exceedVideoConstraintsIfNecessary == other.exceedVideoConstraintsIfNecessary
-          && orientationMayChange == other.orientationMayChange
-          && viewportWidth == other.viewportWidth && viewportHeight == other.viewportHeight
+          && exceedRendererCapabilitiesIfNecessary == other.exceedRendererCapabilitiesIfNecessary
+          && viewportOrientationMayChange == other.viewportOrientationMayChange
+          && viewportWidth == other.viewportWidth
+          && viewportHeight == other.viewportHeight
+          && maxVideoBitrate == other.maxVideoBitrate
+          && tunnelingAudioSessionId == other.tunnelingAudioSessionId
           && TextUtils.equals(preferredAudioLanguage, other.preferredAudioLanguage)
-          && TextUtils.equals(preferredTextLanguage, other.preferredTextLanguage);
+          && TextUtils.equals(preferredTextLanguage, other.preferredTextLanguage)
+          && areRendererDisabledFlagsEqual(rendererDisabledFlags, other.rendererDisabledFlags)
+          && areSelectionOverridesEqual(selectionOverrides, other.selectionOverrides);
     }
 
     @Override
     public int hashCode() {
-      int result = preferredAudioLanguage.hashCode();
-      result = 31 * result + preferredTextLanguage.hashCode();
+      int result = selectUndeterminedTextLanguage ? 1 : 0;
+      result = 31 * result + disabledTextTrackSelectionFlags;
+      result = 31 * result + (forceLowestBitrate ? 1 : 0);
       result = 31 * result + (allowMixedMimeAdaptiveness ? 1 : 0);
       result = 31 * result + (allowNonSeamlessAdaptiveness ? 1 : 0);
       result = 31 * result + maxVideoWidth;
       result = 31 * result + maxVideoHeight;
       result = 31 * result + (exceedVideoConstraintsIfNecessary ? 1 : 0);
-      result = 31 * result + (orientationMayChange ? 1 : 0);
+      result = 31 * result + (exceedRendererCapabilitiesIfNecessary ? 1 : 0);
+      result = 31 * result + (viewportOrientationMayChange ? 1 : 0);
       result = 31 * result + viewportWidth;
       result = 31 * result + viewportHeight;
+      result = 31 * result + maxVideoBitrate;
+      result = 31 * result + tunnelingAudioSessionId;
+      result = 31 * result + preferredAudioLanguage.hashCode();
+      result = 31 * result + preferredTextLanguage.hashCode();
       return result;
     }
 
+    // Parcelable implementation.
+
+    @Override
+    public int describeContents() {
+      return 0;
+    }
+
+    @Override
+    public void writeToParcel(Parcel dest, int flags) {
+      writeSelectionOverridesToParcel(dest, selectionOverrides);
+      dest.writeSparseBooleanArray(rendererDisabledFlags);
+      dest.writeString(preferredAudioLanguage);
+      dest.writeString(preferredTextLanguage);
+      Util.writeBoolean(dest, selectUndeterminedTextLanguage);
+      dest.writeInt(disabledTextTrackSelectionFlags);
+      Util.writeBoolean(dest, forceLowestBitrate);
+      Util.writeBoolean(dest, allowMixedMimeAdaptiveness);
+      Util.writeBoolean(dest, allowNonSeamlessAdaptiveness);
+      dest.writeInt(maxVideoWidth);
+      dest.writeInt(maxVideoHeight);
+      dest.writeInt(maxVideoBitrate);
+      Util.writeBoolean(dest, exceedVideoConstraintsIfNecessary);
+      Util.writeBoolean(dest, exceedRendererCapabilitiesIfNecessary);
+      dest.writeInt(viewportWidth);
+      dest.writeInt(viewportHeight);
+      Util.writeBoolean(dest, viewportOrientationMayChange);
+      dest.writeInt(tunnelingAudioSessionId);
+    }
+
+    public static final Parcelable.Creator<Parameters> CREATOR =
+        new Parcelable.Creator<Parameters>() {
+
+          @Override
+          public Parameters createFromParcel(Parcel in) {
+            return new Parameters(in);
+          }
+
+          @Override
+          public Parameters[] newArray(int size) {
+            return new Parameters[size];
+          }
+        };
+
+    // Static utility methods.
+
+    private static SparseArray<Map<TrackGroupArray, SelectionOverride>> readSelectionOverrides(
+        Parcel in) {
+      int renderersWithOverridesCount = in.readInt();
+      SparseArray<Map<TrackGroupArray, SelectionOverride>> selectionOverrides =
+          new SparseArray<>(renderersWithOverridesCount);
+      for (int i = 0; i < renderersWithOverridesCount; i++) {
+        int rendererIndex = in.readInt();
+        int overrideCount = in.readInt();
+        Map<TrackGroupArray, SelectionOverride> overrides = new HashMap<>(overrideCount);
+        for (int j = 0; j < overrideCount; j++) {
+          TrackGroupArray trackGroups = in.readParcelable(TrackGroupArray.class.getClassLoader());
+          SelectionOverride override = in.readParcelable(SelectionOverride.class.getClassLoader());
+          overrides.put(trackGroups, override);
+        }
+        selectionOverrides.put(rendererIndex, overrides);
+      }
+      return selectionOverrides;
+    }
+
+    private static void writeSelectionOverridesToParcel(
+        Parcel dest, SparseArray<Map<TrackGroupArray, SelectionOverride>> selectionOverrides) {
+      int renderersWithOverridesCount = selectionOverrides.size();
+      dest.writeInt(renderersWithOverridesCount);
+      for (int i = 0; i < renderersWithOverridesCount; i++) {
+        int rendererIndex = selectionOverrides.keyAt(i);
+        Map<TrackGroupArray, SelectionOverride> overrides = selectionOverrides.valueAt(i);
+        int overrideCount = overrides.size();
+        dest.writeInt(rendererIndex);
+        dest.writeInt(overrideCount);
+        for (Map.Entry<TrackGroupArray, SelectionOverride> override : overrides.entrySet()) {
+          dest.writeParcelable(override.getKey(), /* parcelableFlags= */ 0);
+          dest.writeParcelable(override.getValue(), /* parcelableFlags= */ 0);
+        }
+      }
+    }
+
+    private static boolean areRendererDisabledFlagsEqual(
+        SparseBooleanArray first, SparseBooleanArray second) {
+      int firstSize = first.size();
+      if (second.size() != firstSize) {
+        return false;
+      }
+      // Only true values are put into rendererDisabledFlags, so we don't need to compare values.
+      for (int indexInFirst = 0; indexInFirst < firstSize; indexInFirst++) {
+        if (second.indexOfKey(first.keyAt(indexInFirst)) < 0) {
+          return false;
+        }
+      }
+      return true;
+    }
+
+    private static boolean areSelectionOverridesEqual(
+        SparseArray<Map<TrackGroupArray, SelectionOverride>> first,
+        SparseArray<Map<TrackGroupArray, SelectionOverride>> second) {
+      int firstSize = first.size();
+      if (second.size() != firstSize) {
+        return false;
+      }
+      for (int indexInFirst = 0; indexInFirst < firstSize; indexInFirst++) {
+        int indexInSecond = second.indexOfKey(first.keyAt(indexInFirst));
+        if (indexInSecond < 0
+            || !areSelectionOverridesEqual(
+                first.valueAt(indexInFirst), second.valueAt(indexInSecond))) {
+          return false;
+        }
+      }
+      return true;
+    }
+
+    private static boolean areSelectionOverridesEqual(
+        Map<TrackGroupArray, SelectionOverride> first,
+        Map<TrackGroupArray, SelectionOverride> second) {
+      int firstSize = first.size();
+      if (second.size() != firstSize) {
+        return false;
+      }
+      for (Map.Entry<TrackGroupArray, SelectionOverride> firstEntry : first.entrySet()) {
+        TrackGroupArray key = firstEntry.getKey();
+        if (!second.containsKey(key) || !Util.areEqual(firstEntry.getValue(), second.get(key))) {
+          return false;
+        }
+      }
+      return true;
+    }
+  }
+
+  /** A track selection override. */
+  public static final class SelectionOverride implements Parcelable {
+
+    public final int groupIndex;
+    public final int[] tracks;
+    public final int length;
+
+    /**
+     * @param groupIndex The overriding track group index.
+     * @param tracks The overriding track indices within the track group.
+     */
+    public SelectionOverride(int groupIndex, int... tracks) {
+      this.groupIndex = groupIndex;
+      this.tracks = Arrays.copyOf(tracks, tracks.length);
+      this.length = tracks.length;
+      Arrays.sort(this.tracks);
+    }
+
+    /* package */ SelectionOverride(Parcel in) {
+      groupIndex = in.readInt();
+      length = in.readByte();
+      tracks = new int[length];
+      in.readIntArray(tracks);
+    }
+
+    /** Returns whether this override contains the specified track index. */
+    public boolean containsTrack(int track) {
+      for (int overrideTrack : tracks) {
+        if (overrideTrack == track) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    @Override
+    public int hashCode() {
+      return 31 * groupIndex + Arrays.hashCode(tracks);
+    }
+
+    @Override
+    public boolean equals(@Nullable Object obj) {
+      if (this == obj) {
+        return true;
+      }
+      if (obj == null || getClass() != obj.getClass()) {
+        return false;
+      }
+      SelectionOverride other = (SelectionOverride) obj;
+      return groupIndex == other.groupIndex && Arrays.equals(tracks, other.tracks);
+    }
+
+    // Parcelable implementation.
+
+    @Override
+    public int describeContents() {
+      return 0;
+    }
+
+    @Override
+    public void writeToParcel(Parcel dest, int flags) {
+      dest.writeInt(groupIndex);
+      dest.writeInt(tracks.length);
+      dest.writeIntArray(tracks);
+    }
+
+    public static final Parcelable.Creator<SelectionOverride> CREATOR =
+        new Parcelable.Creator<SelectionOverride>() {
+
+          @Override
+          public SelectionOverride createFromParcel(Parcel in) {
+            return new SelectionOverride(in);
+          }
+
+          @Override
+          public SelectionOverride[] newArray(int size) {
+            return new SelectionOverride[size];
+          }
+        };
   }
 
   /**
@@ -319,38 +1040,59 @@ public class DefaultTrackSelector extends MappingTrackSelector {
    */
   private static final float FRACTION_TO_CONSIDER_FULLSCREEN = 0.98f;
   private static final int[] NO_TRACKS = new int[0];
+  private static final int WITHIN_RENDERER_CAPABILITIES_BONUS = 1000;
 
-  private final TrackSelection.Factory adaptiveVideoTrackSelectionFactory;
-  private final AtomicReference<Parameters> params;
+  private final TrackSelection.Factory adaptiveTrackSelectionFactory;
+  private final AtomicReference<Parameters> parametersReference;
 
   /**
-   * Constructs an instance that does not support adaptive video.
+   * Constructs an instance that does not support adaptive track selection.
    */
   public DefaultTrackSelector() {
-    this(null);
+    this((TrackSelection.Factory) null);
   }
 
   /**
-   * Constructs an instance that uses a factory to create adaptive video track selections.
+   * Constructs an instance that supports adaptive track selection. Adaptive track selections use
+   * the provided {@link BandwidthMeter} to determine which individual track should be used during
+   * playback.
    *
-   * @param adaptiveVideoTrackSelectionFactory A factory for adaptive video {@link TrackSelection}s,
-   *     or null if the selector should not support adaptive video.
+   * @param bandwidthMeter The {@link BandwidthMeter}.
    */
-  public DefaultTrackSelector(TrackSelection.Factory adaptiveVideoTrackSelectionFactory) {
-    this.adaptiveVideoTrackSelectionFactory = adaptiveVideoTrackSelectionFactory;
-    params = new AtomicReference<>(new Parameters());
+  public DefaultTrackSelector(BandwidthMeter bandwidthMeter) {
+    this(new AdaptiveTrackSelection.Factory(bandwidthMeter));
+  }
+
+  /**
+   * Constructs an instance that uses a factory to create adaptive track selections.
+   *
+   * @param adaptiveTrackSelectionFactory A factory for adaptive {@link TrackSelection}s, or null if
+   *     the selector should not support adaptive tracks.
+   */
+  public DefaultTrackSelector(TrackSelection.Factory adaptiveTrackSelectionFactory) {
+    this.adaptiveTrackSelectionFactory = adaptiveTrackSelectionFactory;
+    parametersReference = new AtomicReference<>(Parameters.DEFAULT);
   }
 
   /**
    * Atomically sets the provided parameters for track selection.
    *
-   * @param params The parameters for track selection.
+   * @param parameters The parameters for track selection.
    */
-  public void setParameters(Parameters params) {
-    if (!this.params.get().equals(params)) {
-      this.params.set(Assertions.checkNotNull(params));
+  public void setParameters(Parameters parameters) {
+    Assertions.checkNotNull(parameters);
+    if (!parametersReference.getAndSet(parameters).equals(parameters)) {
       invalidate();
     }
+  }
+
+  /**
+   * Atomically sets the provided parameters for track selection.
+   *
+   * @param parametersBuilder A builder from which to obtain the parameters for track selection.
+   */
+  public void setParameters(ParametersBuilder parametersBuilder) {
+    setParameters(parametersBuilder.build());
   }
 
   /**
@@ -359,99 +1101,295 @@ public class DefaultTrackSelector extends MappingTrackSelector {
    * @return The current selection parameters.
    */
   public Parameters getParameters() {
-    return params.get();
+    return parametersReference.get();
+  }
+
+  /** Returns a new {@link ParametersBuilder} initialized with the current selection parameters. */
+  public ParametersBuilder buildUponParameters() {
+    return getParameters().buildUpon();
+  }
+
+  /** @deprecated Use {@link ParametersBuilder#setRendererDisabled(int, boolean)}. */
+  @Deprecated
+  public final void setRendererDisabled(int rendererIndex, boolean disabled) {
+    setParameters(buildUponParameters().setRendererDisabled(rendererIndex, disabled));
+  }
+
+  /** @deprecated Use {@link Parameters#getRendererDisabled(int)}. * */
+  @Deprecated
+  public final boolean getRendererDisabled(int rendererIndex) {
+    return getParameters().getRendererDisabled(rendererIndex);
+  }
+
+  /**
+   * @deprecated Use {@link ParametersBuilder#setSelectionOverride(int, TrackGroupArray,
+   *     SelectionOverride)}.
+   */
+  @Deprecated
+  public final void setSelectionOverride(
+      int rendererIndex, TrackGroupArray groups, SelectionOverride override) {
+    setParameters(buildUponParameters().setSelectionOverride(rendererIndex, groups, override));
+  }
+
+  /** @deprecated Use {@link Parameters#hasSelectionOverride(int, TrackGroupArray)}. * */
+  @Deprecated
+  public final boolean hasSelectionOverride(int rendererIndex, TrackGroupArray groups) {
+    return getParameters().hasSelectionOverride(rendererIndex, groups);
+  }
+
+  /** @deprecated Use {@link Parameters#getSelectionOverride(int, TrackGroupArray)}. */
+  @Deprecated
+  public final SelectionOverride getSelectionOverride(int rendererIndex, TrackGroupArray groups) {
+    return getParameters().getSelectionOverride(rendererIndex, groups);
+  }
+
+  /** @deprecated Use {@link ParametersBuilder#clearSelectionOverride(int, TrackGroupArray)}. */
+  @Deprecated
+  public final void clearSelectionOverride(int rendererIndex, TrackGroupArray groups) {
+    setParameters(buildUponParameters().clearSelectionOverride(rendererIndex, groups));
+  }
+
+  /** @deprecated Use {@link ParametersBuilder#clearSelectionOverrides(int)}. */
+  @Deprecated
+  public final void clearSelectionOverrides(int rendererIndex) {
+    setParameters(buildUponParameters().clearSelectionOverrides(rendererIndex));
+  }
+
+  /** @deprecated Use {@link ParametersBuilder#clearSelectionOverrides()}. */
+  @Deprecated
+  public final void clearSelectionOverrides() {
+    setParameters(buildUponParameters().clearSelectionOverrides());
+  }
+
+  /** @deprecated Use {@link ParametersBuilder#setTunnelingAudioSessionId(int)}. */
+  @Deprecated
+  public void setTunnelingAudioSessionId(int tunnelingAudioSessionId) {
+    setParameters(buildUponParameters().setTunnelingAudioSessionId(tunnelingAudioSessionId));
   }
 
   // MappingTrackSelector implementation.
 
   @Override
-  protected TrackSelection[] selectTracks(RendererCapabilities[] rendererCapabilities,
-      TrackGroupArray[] rendererTrackGroupArrays, int[][][] rendererFormatSupports)
+  protected final Pair<RendererConfiguration[], TrackSelection[]> selectTracks(
+      MappedTrackInfo mappedTrackInfo,
+      int[][][] rendererFormatSupports,
+      int[] rendererMixedMimeTypeAdaptationSupports)
       throws ExoPlaybackException {
-    // Make a track selection for each renderer.
-    TrackSelection[] rendererTrackSelections = new TrackSelection[rendererCapabilities.length];
-    Parameters params = this.params.get();
-    for (int i = 0; i < rendererCapabilities.length; i++) {
-      switch (rendererCapabilities[i].getTrackType()) {
+    Parameters params = parametersReference.get();
+    int rendererCount = mappedTrackInfo.getRendererCount();
+    TrackSelection[] rendererTrackSelections =
+        selectAllTracks(
+            mappedTrackInfo,
+            rendererFormatSupports,
+            rendererMixedMimeTypeAdaptationSupports,
+            params);
+
+    // Apply track disabling and overriding.
+    for (int i = 0; i < rendererCount; i++) {
+      if (params.getRendererDisabled(i)) {
+        rendererTrackSelections[i] = null;
+      } else {
+        TrackGroupArray rendererTrackGroups = mappedTrackInfo.getTrackGroups(i);
+        if (params.hasSelectionOverride(i, rendererTrackGroups)) {
+          SelectionOverride override = params.getSelectionOverride(i, rendererTrackGroups);
+          if (override == null) {
+            rendererTrackSelections[i] = null;
+          } else if (override.length == 1) {
+            rendererTrackSelections[i] =
+                new FixedTrackSelection(
+                    rendererTrackGroups.get(override.groupIndex), override.tracks[0]);
+          } else {
+            rendererTrackSelections[i] =
+                adaptiveTrackSelectionFactory.createTrackSelection(
+                    rendererTrackGroups.get(override.groupIndex), override.tracks);
+          }
+        }
+      }
+    }
+
+    // Initialize the renderer configurations to the default configuration for all renderers with
+    // selections, and null otherwise.
+    RendererConfiguration[] rendererConfigurations = new RendererConfiguration[rendererCount];
+    for (int i = 0; i < rendererCount; i++) {
+      boolean forceRendererDisabled = params.getRendererDisabled(i);
+      boolean rendererEnabled =
+          !forceRendererDisabled
+              && (mappedTrackInfo.getRendererType(i) == C.TRACK_TYPE_NONE
+                  || rendererTrackSelections[i] != null);
+      rendererConfigurations[i] = rendererEnabled ? RendererConfiguration.DEFAULT : null;
+    }
+
+    // Configure audio and video renderers to use tunneling if appropriate.
+    maybeConfigureRenderersForTunneling(
+        mappedTrackInfo,
+        rendererFormatSupports,
+        rendererConfigurations,
+        rendererTrackSelections,
+        params.tunnelingAudioSessionId);
+
+    return Pair.create(rendererConfigurations, rendererTrackSelections);
+  }
+
+  // Track selection prior to overrides and disabled flags being applied.
+
+  /**
+   * Called from {@link #selectTracks(MappedTrackInfo, int[][][], int[])} to make a track selection
+   * for each renderer, prior to overrides and disabled flags being applied.
+   *
+   * <p>The implementation should not account for overrides and disabled flags. Track selections
+   * generated by this method will be overridden to account for these properties.
+   *
+   * @param mappedTrackInfo Mapped track information.
+   * @param rendererFormatSupports The result of {@link RendererCapabilities#supportsFormat} for
+   *     each mapped track, indexed by renderer, track group and track (in that order).
+   * @param rendererMixedMimeTypeAdaptationSupports The result of {@link
+   *     RendererCapabilities#supportsMixedMimeTypeAdaptation()} for each renderer.
+   * @return Track selections for each renderer. A null selection indicates the renderer should be
+   *     disabled, unless RendererCapabilities#getTrackType()} is {@link C#TRACK_TYPE_NONE}.
+   * @throws ExoPlaybackException If an error occurs while selecting the tracks.
+   */
+  protected TrackSelection[] selectAllTracks(
+      MappedTrackInfo mappedTrackInfo,
+      int[][][] rendererFormatSupports,
+      int[] rendererMixedMimeTypeAdaptationSupports,
+      Parameters params)
+      throws ExoPlaybackException {
+    int rendererCount = mappedTrackInfo.getRendererCount();
+    TrackSelection[] rendererTrackSelections = new TrackSelection[rendererCount];
+
+    boolean seenVideoRendererWithMappedTracks = false;
+    boolean selectedVideoTracks = false;
+    for (int i = 0; i < rendererCount; i++) {
+      if (C.TRACK_TYPE_VIDEO == mappedTrackInfo.getRendererType(i)) {
+        if (!selectedVideoTracks) {
+          rendererTrackSelections[i] =
+              selectVideoTrack(
+                  mappedTrackInfo.getTrackGroups(i),
+                  rendererFormatSupports[i],
+                  rendererMixedMimeTypeAdaptationSupports[i],
+                  params,
+                  adaptiveTrackSelectionFactory);
+          selectedVideoTracks = rendererTrackSelections[i] != null;
+        }
+        seenVideoRendererWithMappedTracks |= mappedTrackInfo.getTrackGroups(i).length > 0;
+      }
+    }
+
+    boolean selectedAudioTracks = false;
+    boolean selectedTextTracks = false;
+    for (int i = 0; i < rendererCount; i++) {
+      int trackType = mappedTrackInfo.getRendererType(i);
+      switch (trackType) {
         case C.TRACK_TYPE_VIDEO:
-          rendererTrackSelections[i] = selectVideoTrack(rendererCapabilities[i],
-              rendererTrackGroupArrays[i], rendererFormatSupports[i], params.maxVideoWidth,
-              params.maxVideoHeight, params.allowNonSeamlessAdaptiveness,
-              params.allowMixedMimeAdaptiveness, params.viewportWidth, params.viewportHeight,
-              params.orientationMayChange, adaptiveVideoTrackSelectionFactory,
-              params.exceedVideoConstraintsIfNecessary);
+          // Already done. Do nothing.
           break;
         case C.TRACK_TYPE_AUDIO:
-          rendererTrackSelections[i] = selectAudioTrack(rendererTrackGroupArrays[i],
-              rendererFormatSupports[i], params.preferredAudioLanguage);
+          if (!selectedAudioTracks) {
+            rendererTrackSelections[i] =
+                selectAudioTrack(
+                    mappedTrackInfo.getTrackGroups(i),
+                    rendererFormatSupports[i],
+                    rendererMixedMimeTypeAdaptationSupports[i],
+                    params,
+                    seenVideoRendererWithMappedTracks ? null : adaptiveTrackSelectionFactory);
+            selectedAudioTracks = rendererTrackSelections[i] != null;
+          }
           break;
         case C.TRACK_TYPE_TEXT:
-          rendererTrackSelections[i] = selectTextTrack(rendererTrackGroupArrays[i],
-              rendererFormatSupports[i], params.preferredTextLanguage,
-              params.preferredAudioLanguage);
+          if (!selectedTextTracks) {
+            rendererTrackSelections[i] =
+                selectTextTrack(
+                    mappedTrackInfo.getTrackGroups(i), rendererFormatSupports[i], params);
+            selectedTextTracks = rendererTrackSelections[i] != null;
+          }
           break;
         default:
-          rendererTrackSelections[i] = selectOtherTrack(rendererCapabilities[i].getTrackType(),
-              rendererTrackGroupArrays[i], rendererFormatSupports[i]);
+          rendererTrackSelections[i] =
+              selectOtherTrack(
+                  trackType, mappedTrackInfo.getTrackGroups(i), rendererFormatSupports[i], params);
           break;
       }
     }
+
     return rendererTrackSelections;
   }
 
   // Video track selection implementation.
 
-  protected TrackSelection selectVideoTrack(RendererCapabilities rendererCapabilities,
-      TrackGroupArray groups, int[][] formatSupport, int maxVideoWidth, int maxVideoHeight,
-      boolean allowNonSeamlessAdaptiveness, boolean allowMixedMimeAdaptiveness, int viewportWidth,
-      int viewportHeight, boolean orientationMayChange,
-      TrackSelection.Factory adaptiveVideoTrackSelectionFactory,
-      boolean exceedConstraintsIfNecessary) throws ExoPlaybackException {
+  /**
+   * Called by {@link #selectAllTracks(MappedTrackInfo, int[][][], int[], Parameters)} to create a
+   * {@link TrackSelection} for a video renderer.
+   *
+   * @param groups The {@link TrackGroupArray} mapped to the renderer.
+   * @param formatSupports The result of {@link RendererCapabilities#supportsFormat} for each mapped
+   *     track, indexed by track group index and track index (in that order).
+   * @param mixedMimeTypeAdaptationSupports The result of {@link
+   *     RendererCapabilities#supportsMixedMimeTypeAdaptation()} for the renderer.
+   * @param params The selector's current constraint parameters.
+   * @param adaptiveTrackSelectionFactory A factory for generating adaptive track selections, or
+   *     null if a fixed track selection is required.
+   * @return The {@link TrackSelection} for the renderer, or null if no selection was made.
+   * @throws ExoPlaybackException If an error occurs while selecting the tracks.
+   */
+  protected TrackSelection selectVideoTrack(
+      TrackGroupArray groups,
+      int[][] formatSupports,
+      int mixedMimeTypeAdaptationSupports,
+      Parameters params,
+      TrackSelection.Factory adaptiveTrackSelectionFactory)
+      throws ExoPlaybackException {
     TrackSelection selection = null;
-    if (adaptiveVideoTrackSelectionFactory != null) {
-      selection = selectAdaptiveVideoTrack(rendererCapabilities, groups, formatSupport,
-          maxVideoWidth, maxVideoHeight, allowNonSeamlessAdaptiveness,
-          allowMixedMimeAdaptiveness, viewportWidth, viewportHeight,
-          orientationMayChange, adaptiveVideoTrackSelectionFactory);
+    if (!params.forceLowestBitrate && adaptiveTrackSelectionFactory != null) {
+      selection =
+          selectAdaptiveVideoTrack(
+              groups,
+              formatSupports,
+              mixedMimeTypeAdaptationSupports,
+              params,
+              adaptiveTrackSelectionFactory);
     }
     if (selection == null) {
-      selection = selectFixedVideoTrack(groups, formatSupport, maxVideoWidth, maxVideoHeight,
-          viewportWidth, viewportHeight, orientationMayChange, exceedConstraintsIfNecessary);
+      selection = selectFixedVideoTrack(groups, formatSupports, params);
     }
     return selection;
   }
 
-  private static TrackSelection selectAdaptiveVideoTrack(RendererCapabilities rendererCapabilities,
-      TrackGroupArray groups, int[][] formatSupport, int maxVideoWidth, int maxVideoHeight,
-      boolean allowNonSeamlessAdaptiveness, boolean allowMixedMimeAdaptiveness, int viewportWidth,
-      int viewportHeight, boolean orientationMayChange,
-      TrackSelection.Factory adaptiveVideoTrackSelectionFactory) throws ExoPlaybackException {
-    int requiredAdaptiveSupport = allowNonSeamlessAdaptiveness
+  private static TrackSelection selectAdaptiveVideoTrack(
+      TrackGroupArray groups,
+      int[][] formatSupport,
+      int mixedMimeTypeAdaptationSupports,
+      Parameters params,
+      TrackSelection.Factory adaptiveTrackSelectionFactory)
+      throws ExoPlaybackException {
+    int requiredAdaptiveSupport = params.allowNonSeamlessAdaptiveness
         ? (RendererCapabilities.ADAPTIVE_NOT_SEAMLESS | RendererCapabilities.ADAPTIVE_SEAMLESS)
         : RendererCapabilities.ADAPTIVE_SEAMLESS;
-    boolean allowMixedMimeTypes = allowMixedMimeAdaptiveness
-        && (rendererCapabilities.supportsMixedMimeTypeAdaptation() & requiredAdaptiveSupport) != 0;
+    boolean allowMixedMimeTypes =
+        params.allowMixedMimeAdaptiveness
+            && (mixedMimeTypeAdaptationSupports & requiredAdaptiveSupport) != 0;
     for (int i = 0; i < groups.length; i++) {
       TrackGroup group = groups.get(i);
-      int[] adaptiveTracks = getAdaptiveTracksForGroup(group, formatSupport[i],
-          allowMixedMimeTypes, requiredAdaptiveSupport, maxVideoWidth, maxVideoHeight,
-          viewportWidth, viewportHeight, orientationMayChange);
+      int[] adaptiveTracks = getAdaptiveVideoTracksForGroup(group, formatSupport[i],
+          allowMixedMimeTypes, requiredAdaptiveSupport, params.maxVideoWidth, params.maxVideoHeight,
+          params.maxVideoBitrate, params.viewportWidth, params.viewportHeight,
+          params.viewportOrientationMayChange);
       if (adaptiveTracks.length > 0) {
-        return adaptiveVideoTrackSelectionFactory.createTrackSelection(group, adaptiveTracks);
+        return adaptiveTrackSelectionFactory.createTrackSelection(group, adaptiveTracks);
       }
     }
     return null;
   }
 
-  private static int[] getAdaptiveTracksForGroup(TrackGroup group, int[] formatSupport,
+  private static int[] getAdaptiveVideoTracksForGroup(TrackGroup group, int[] formatSupport,
       boolean allowMixedMimeTypes, int requiredAdaptiveSupport, int maxVideoWidth,
-      int maxVideoHeight, int viewportWidth, int viewportHeight, boolean orientationMayChange) {
+      int maxVideoHeight, int maxVideoBitrate, int viewportWidth, int viewportHeight,
+      boolean viewportOrientationMayChange) {
     if (group.length < 2) {
       return NO_TRACKS;
     }
 
     List<Integer> selectedTrackIndices = getViewportFilteredTrackIndices(group, viewportWidth,
-        viewportHeight, orientationMayChange);
+        viewportHeight, viewportOrientationMayChange);
     if (selectedTrackIndices.size() < 2) {
       return NO_TRACKS;
     }
@@ -464,11 +1402,10 @@ public class DefaultTrackSelector extends MappingTrackSelector {
       for (int i = 0; i < selectedTrackIndices.size(); i++) {
         int trackIndex = selectedTrackIndices.get(i);
         String sampleMimeType = group.getFormat(trackIndex).sampleMimeType;
-        if (!seenMimeTypes.contains(sampleMimeType)) {
-          seenMimeTypes.add(sampleMimeType);
-          int countForMimeType = getAdaptiveTrackCountForMimeType(group, formatSupport,
+        if (seenMimeTypes.add(sampleMimeType)) {
+          int countForMimeType = getAdaptiveVideoTrackCountForMimeType(group, formatSupport,
               requiredAdaptiveSupport, sampleMimeType, maxVideoWidth, maxVideoHeight,
-              selectedTrackIndices);
+              maxVideoBitrate, selectedTrackIndices);
           if (countForMimeType > selectedMimeTypeTrackCount) {
             selectedMimeType = sampleMimeType;
             selectedMimeTypeTrackCount = countForMimeType;
@@ -478,79 +1415,103 @@ public class DefaultTrackSelector extends MappingTrackSelector {
     }
 
     // Filter by the selected mime type.
-    filterAdaptiveTrackCountForMimeType(group, formatSupport, requiredAdaptiveSupport,
-        selectedMimeType, maxVideoWidth, maxVideoHeight, selectedTrackIndices);
+    filterAdaptiveVideoTrackCountForMimeType(group, formatSupport, requiredAdaptiveSupport,
+        selectedMimeType, maxVideoWidth, maxVideoHeight, maxVideoBitrate, selectedTrackIndices);
 
     return selectedTrackIndices.size() < 2 ? NO_TRACKS : Util.toArray(selectedTrackIndices);
   }
 
-  private static int getAdaptiveTrackCountForMimeType(TrackGroup group, int[] formatSupport,
+  private static int getAdaptiveVideoTrackCountForMimeType(TrackGroup group, int[] formatSupport,
       int requiredAdaptiveSupport, String mimeType, int maxVideoWidth, int maxVideoHeight,
-      List<Integer> selectedTrackIndices) {
+      int maxVideoBitrate, List<Integer> selectedTrackIndices) {
     int adaptiveTrackCount = 0;
     for (int i = 0; i < selectedTrackIndices.size(); i++) {
       int trackIndex = selectedTrackIndices.get(i);
       if (isSupportedAdaptiveVideoTrack(group.getFormat(trackIndex), mimeType,
-          formatSupport[trackIndex], requiredAdaptiveSupport, maxVideoWidth, maxVideoHeight)) {
+          formatSupport[trackIndex], requiredAdaptiveSupport, maxVideoWidth, maxVideoHeight,
+          maxVideoBitrate)) {
         adaptiveTrackCount++;
       }
     }
     return adaptiveTrackCount;
   }
 
-  private static void filterAdaptiveTrackCountForMimeType(TrackGroup group, int[] formatSupport,
-      int requiredAdaptiveSupport, String mimeType, int maxVideoWidth, int maxVideoHeight,
-      List<Integer> selectedTrackIndices) {
+  private static void filterAdaptiveVideoTrackCountForMimeType(TrackGroup group,
+      int[] formatSupport, int requiredAdaptiveSupport, String mimeType, int maxVideoWidth,
+      int maxVideoHeight, int maxVideoBitrate, List<Integer> selectedTrackIndices) {
     for (int i = selectedTrackIndices.size() - 1; i >= 0; i--) {
       int trackIndex = selectedTrackIndices.get(i);
       if (!isSupportedAdaptiveVideoTrack(group.getFormat(trackIndex), mimeType,
-          formatSupport[trackIndex], requiredAdaptiveSupport, maxVideoWidth, maxVideoHeight)) {
+          formatSupport[trackIndex], requiredAdaptiveSupport, maxVideoWidth, maxVideoHeight,
+          maxVideoBitrate)) {
         selectedTrackIndices.remove(i);
       }
     }
   }
 
   private static boolean isSupportedAdaptiveVideoTrack(Format format, String mimeType,
-      int formatSupport, int requiredAdaptiveSupport, int maxVideoWidth, int maxVideoHeight) {
-    return isSupported(formatSupport) && ((formatSupport & requiredAdaptiveSupport) != 0)
+      int formatSupport, int requiredAdaptiveSupport, int maxVideoWidth, int maxVideoHeight,
+      int maxVideoBitrate) {
+    return isSupported(formatSupport, false) && ((formatSupport & requiredAdaptiveSupport) != 0)
         && (mimeType == null || Util.areEqual(format.sampleMimeType, mimeType))
         && (format.width == Format.NO_VALUE || format.width <= maxVideoWidth)
-        && (format.height == Format.NO_VALUE || format.height <= maxVideoHeight);
+        && (format.height == Format.NO_VALUE || format.height <= maxVideoHeight)
+        && (format.bitrate == Format.NO_VALUE || format.bitrate <= maxVideoBitrate);
   }
 
-  private static TrackSelection selectFixedVideoTrack(TrackGroupArray groups,
-      int[][] formatSupport, int maxVideoWidth, int maxVideoHeight, int viewportWidth,
-      int viewportHeight, boolean orientationMayChange, boolean exceedConstraintsIfNecessary) {
+  private static TrackSelection selectFixedVideoTrack(
+      TrackGroupArray groups, int[][] formatSupports, Parameters params) {
     TrackGroup selectedGroup = null;
     int selectedTrackIndex = 0;
+    int selectedTrackScore = 0;
+    int selectedBitrate = Format.NO_VALUE;
     int selectedPixelCount = Format.NO_VALUE;
-    boolean selectedIsWithinConstraints = false;
     for (int groupIndex = 0; groupIndex < groups.length; groupIndex++) {
-      TrackGroup group = groups.get(groupIndex);
-      List<Integer> selectedTrackIndices = getViewportFilteredTrackIndices(group, viewportWidth,
-          viewportHeight, orientationMayChange);
-      int[] trackFormatSupport = formatSupport[groupIndex];
-      for (int trackIndex = 0; trackIndex < group.length; trackIndex++) {
-        if (isSupported(trackFormatSupport[trackIndex])) {
-          Format format = group.getFormat(trackIndex);
+      TrackGroup trackGroup = groups.get(groupIndex);
+      List<Integer> selectedTrackIndices = getViewportFilteredTrackIndices(trackGroup,
+          params.viewportWidth, params.viewportHeight, params.viewportOrientationMayChange);
+      int[] trackFormatSupport = formatSupports[groupIndex];
+      for (int trackIndex = 0; trackIndex < trackGroup.length; trackIndex++) {
+        if (isSupported(trackFormatSupport[trackIndex],
+            params.exceedRendererCapabilitiesIfNecessary)) {
+          Format format = trackGroup.getFormat(trackIndex);
           boolean isWithinConstraints = selectedTrackIndices.contains(trackIndex)
-              && (format.width == Format.NO_VALUE || format.width <= maxVideoWidth)
-              && (format.height == Format.NO_VALUE || format.height <= maxVideoHeight);
-          int pixelCount = format.getPixelCount();
-          boolean selectTrack;
-          if (selectedIsWithinConstraints) {
-            selectTrack = isWithinConstraints
-                && comparePixelCounts(pixelCount, selectedPixelCount) > 0;
-          } else {
-            selectTrack = isWithinConstraints || (exceedConstraintsIfNecessary
-                && (selectedGroup == null
-                || comparePixelCounts(pixelCount, selectedPixelCount) < 0));
+              && (format.width == Format.NO_VALUE || format.width <= params.maxVideoWidth)
+              && (format.height == Format.NO_VALUE || format.height <= params.maxVideoHeight)
+              && (format.bitrate == Format.NO_VALUE || format.bitrate <= params.maxVideoBitrate);
+          if (!isWithinConstraints && !params.exceedVideoConstraintsIfNecessary) {
+            // Track should not be selected.
+            continue;
+          }
+          int trackScore = isWithinConstraints ? 2 : 1;
+          boolean isWithinCapabilities = isSupported(trackFormatSupport[trackIndex], false);
+          if (isWithinCapabilities) {
+            trackScore += WITHIN_RENDERER_CAPABILITIES_BONUS;
+          }
+          boolean selectTrack = trackScore > selectedTrackScore;
+          if (trackScore == selectedTrackScore) {
+            if (params.forceLowestBitrate) {
+              // Use bitrate as a tie breaker, preferring the lower bitrate.
+              selectTrack = compareFormatValues(format.bitrate, selectedBitrate) < 0;
+            } else {
+              // Use the pixel count as a tie breaker (or bitrate if pixel counts are tied). If
+              // we're within constraints prefer a higher pixel count (or bitrate), else prefer a
+              // lower count (or bitrate). If still tied then prefer the first track (i.e. the one
+              // that's already selected).
+              int formatPixelCount = format.getPixelCount();
+              int comparisonResult = formatPixelCount != selectedPixelCount
+                  ? compareFormatValues(formatPixelCount, selectedPixelCount)
+                  : compareFormatValues(format.bitrate, selectedBitrate);
+              selectTrack = isWithinCapabilities && isWithinConstraints
+                  ? comparisonResult > 0 : comparisonResult < 0;
+            }
           }
           if (selectTrack) {
-            selectedGroup = group;
+            selectedGroup = trackGroup;
             selectedTrackIndex = trackIndex;
-            selectedPixelCount = pixelCount;
-            selectedIsWithinConstraints = isWithinConstraints;
+            selectedTrackScore = trackScore;
+            selectedBitrate = format.bitrate;
+            selectedPixelCount = format.getPixelCount();
           }
         }
       }
@@ -559,63 +1520,137 @@ public class DefaultTrackSelector extends MappingTrackSelector {
         : new FixedTrackSelection(selectedGroup, selectedTrackIndex);
   }
 
-  /**
-   * Compares two pixel counts for order. A known pixel count is considered greater than
-   * {@link Format#NO_VALUE}.
-   *
-   * @param first The first pixel count.
-   * @param second The second pixel count.
-   * @return A negative integer if the first pixel count is less than the second. Zero if they are
-   *     equal. A positive integer if the first pixel count is greater than the second.
-   */
-  private static int comparePixelCounts(int first, int second) {
-    return first == Format.NO_VALUE ? (second == Format.NO_VALUE ? 0 : -1)
-        : (second == Format.NO_VALUE ? 1 : (first - second));
-  }
-
-
   // Audio track selection implementation.
 
-  protected TrackSelection selectAudioTrack(TrackGroupArray groups, int[][] formatSupport,
-      String preferredAudioLanguage) {
-    TrackGroup selectedGroup = null;
-    int selectedTrackIndex = 0;
-    int selectedTrackScore = 0;
+  /**
+   * Called by {@link #selectAllTracks(MappedTrackInfo, int[][][], int[], Parameters)} to create a
+   * {@link TrackSelection} for an audio renderer.
+   *
+   * @param groups The {@link TrackGroupArray} mapped to the renderer.
+   * @param formatSupports The result of {@link RendererCapabilities#supportsFormat} for each mapped
+   *     track, indexed by track group index and track index (in that order).
+   * @param mixedMimeTypeAdaptationSupports The result of {@link
+   *     RendererCapabilities#supportsMixedMimeTypeAdaptation()} for the renderer.
+   * @param params The selector's current constraint parameters.
+   * @param adaptiveTrackSelectionFactory A factory for generating adaptive track selections, or
+   *     null if a fixed track selection is required.
+   * @return The {@link TrackSelection} for the renderer, or null if no selection was made.
+   * @throws ExoPlaybackException If an error occurs while selecting the tracks.
+   */
+  protected TrackSelection selectAudioTrack(
+      TrackGroupArray groups,
+      int[][] formatSupports,
+      int mixedMimeTypeAdaptationSupports,
+      Parameters params,
+      TrackSelection.Factory adaptiveTrackSelectionFactory)
+      throws ExoPlaybackException {
+    int selectedTrackIndex = C.INDEX_UNSET;
+    int selectedGroupIndex = C.INDEX_UNSET;
+    AudioTrackScore selectedTrackScore = null;
     for (int groupIndex = 0; groupIndex < groups.length; groupIndex++) {
       TrackGroup trackGroup = groups.get(groupIndex);
-      int[] trackFormatSupport = formatSupport[groupIndex];
+      int[] trackFormatSupport = formatSupports[groupIndex];
       for (int trackIndex = 0; trackIndex < trackGroup.length; trackIndex++) {
-        if (isSupported(trackFormatSupport[trackIndex])) {
+        if (isSupported(trackFormatSupport[trackIndex],
+            params.exceedRendererCapabilitiesIfNecessary)) {
           Format format = trackGroup.getFormat(trackIndex);
-          boolean isDefault = (format.selectionFlags & C.SELECTION_FLAG_DEFAULT) != 0;
-          int trackScore;
-          if (formatHasLanguage(format, preferredAudioLanguage)) {
-            if (isDefault) {
-              trackScore = 4;
-            } else {
-              trackScore = 3;
-            }
-          } else if (isDefault) {
-            trackScore = 2;
-          } else {
-            trackScore = 1;
-          }
-          if (trackScore > selectedTrackScore) {
-            selectedGroup = trackGroup;
+          AudioTrackScore trackScore =
+              new AudioTrackScore(format, params, trackFormatSupport[trackIndex]);
+          if (selectedTrackScore == null || trackScore.compareTo(selectedTrackScore) > 0) {
+            selectedGroupIndex = groupIndex;
             selectedTrackIndex = trackIndex;
             selectedTrackScore = trackScore;
           }
         }
       }
     }
-    return selectedGroup == null ? null
-        : new FixedTrackSelection(selectedGroup, selectedTrackIndex);
+
+    if (selectedGroupIndex == C.INDEX_UNSET) {
+      return null;
+    }
+
+    TrackGroup selectedGroup = groups.get(selectedGroupIndex);
+    if (!params.forceLowestBitrate && adaptiveTrackSelectionFactory != null) {
+      // If the group of the track with the highest score allows it, try to enable adaptation.
+      int[] adaptiveTracks =
+          getAdaptiveAudioTracks(
+              selectedGroup, formatSupports[selectedGroupIndex], params.allowMixedMimeAdaptiveness);
+      if (adaptiveTracks.length > 0) {
+        return adaptiveTrackSelectionFactory.createTrackSelection(selectedGroup,
+            adaptiveTracks);
+      }
+    }
+    return new FixedTrackSelection(selectedGroup, selectedTrackIndex);
+  }
+
+  private static int[] getAdaptiveAudioTracks(TrackGroup group, int[] formatSupport,
+      boolean allowMixedMimeTypes) {
+    int selectedConfigurationTrackCount = 0;
+    AudioConfigurationTuple selectedConfiguration = null;
+    HashSet<AudioConfigurationTuple> seenConfigurationTuples = new HashSet<>();
+    for (int i = 0; i < group.length; i++) {
+      Format format = group.getFormat(i);
+      AudioConfigurationTuple configuration = new AudioConfigurationTuple(
+          format.channelCount, format.sampleRate,
+          allowMixedMimeTypes ? null : format.sampleMimeType);
+      if (seenConfigurationTuples.add(configuration)) {
+        int configurationCount = getAdaptiveAudioTrackCount(group, formatSupport, configuration);
+        if (configurationCount > selectedConfigurationTrackCount) {
+          selectedConfiguration = configuration;
+          selectedConfigurationTrackCount = configurationCount;
+        }
+      }
+    }
+
+    if (selectedConfigurationTrackCount > 1) {
+      int[] adaptiveIndices = new int[selectedConfigurationTrackCount];
+      int index = 0;
+      for (int i = 0; i < group.length; i++) {
+        if (isSupportedAdaptiveAudioTrack(group.getFormat(i), formatSupport[i],
+            selectedConfiguration)) {
+          adaptiveIndices[index++] = i;
+        }
+      }
+      return adaptiveIndices;
+    }
+    return NO_TRACKS;
+  }
+
+  private static int getAdaptiveAudioTrackCount(TrackGroup group, int[] formatSupport,
+      AudioConfigurationTuple configuration) {
+    int count = 0;
+    for (int i = 0; i < group.length; i++) {
+      if (isSupportedAdaptiveAudioTrack(group.getFormat(i), formatSupport[i], configuration)) {
+        count++;
+      }
+    }
+    return count;
+  }
+
+  private static boolean isSupportedAdaptiveAudioTrack(Format format, int formatSupport,
+      AudioConfigurationTuple configuration) {
+    return isSupported(formatSupport, false) && format.channelCount == configuration.channelCount
+        && format.sampleRate == configuration.sampleRate
+        && (configuration.mimeType == null
+        || TextUtils.equals(configuration.mimeType, format.sampleMimeType));
   }
 
   // Text track selection implementation.
 
-  protected TrackSelection selectTextTrack(TrackGroupArray groups, int[][] formatSupport,
-      String preferredTextLanguage, String preferredAudioLanguage) {
+  /**
+   * Called by {@link #selectAllTracks(MappedTrackInfo, int[][][], int[], Parameters)} to create a
+   * {@link TrackSelection} for a text renderer.
+   *
+   * @param groups The {@link TrackGroupArray} mapped to the renderer.
+   * @param formatSupport The result of {@link RendererCapabilities#supportsFormat} for each mapped
+   *     track, indexed by track group index and track index (in that order).
+   * @param params The selector's current constraint parameters.
+   * @return The {@link TrackSelection} for the renderer, or null if no selection was made.
+   * @throws ExoPlaybackException If an error occurs while selecting the tracks.
+   */
+  protected TrackSelection selectTextTrack(
+      TrackGroupArray groups, int[][] formatSupport, Parameters params)
+      throws ExoPlaybackException {
     TrackGroup selectedGroup = null;
     int selectedTrackIndex = 0;
     int selectedTrackScore = 0;
@@ -623,32 +1658,42 @@ public class DefaultTrackSelector extends MappingTrackSelector {
       TrackGroup trackGroup = groups.get(groupIndex);
       int[] trackFormatSupport = formatSupport[groupIndex];
       for (int trackIndex = 0; trackIndex < trackGroup.length; trackIndex++) {
-        if (isSupported(trackFormatSupport[trackIndex])) {
+        if (isSupported(trackFormatSupport[trackIndex],
+            params.exceedRendererCapabilitiesIfNecessary)) {
           Format format = trackGroup.getFormat(trackIndex);
-          boolean isDefault = (format.selectionFlags & C.SELECTION_FLAG_DEFAULT) != 0;
-          boolean isForced = (format.selectionFlags & C.SELECTION_FLAG_FORCED) != 0;
+          int maskedSelectionFlags =
+              format.selectionFlags & ~params.disabledTextTrackSelectionFlags;
+          boolean isDefault = (maskedSelectionFlags & C.SELECTION_FLAG_DEFAULT) != 0;
+          boolean isForced = (maskedSelectionFlags & C.SELECTION_FLAG_FORCED) != 0;
           int trackScore;
-          if (formatHasLanguage(format, preferredTextLanguage)) {
+          boolean preferredLanguageFound = formatHasLanguage(format, params.preferredTextLanguage);
+          if (preferredLanguageFound
+              || (params.selectUndeterminedTextLanguage && formatHasNoLanguage(format))) {
             if (isDefault) {
-              trackScore = 6;
+              trackScore = 8;
             } else if (!isForced) {
               // Prefer non-forced to forced if a preferred text language has been specified. Where
               // both are provided the non-forced track will usually contain the forced subtitles as
               // a subset.
-              trackScore = 5;
+              trackScore = 6;
             } else {
               trackScore = 4;
             }
+            trackScore += preferredLanguageFound ? 1 : 0;
           } else if (isDefault) {
             trackScore = 3;
           } else if (isForced) {
-            if (formatHasLanguage(format, preferredAudioLanguage)) {
+            if (formatHasLanguage(format, params.preferredAudioLanguage)) {
               trackScore = 2;
             } else {
               trackScore = 1;
             }
           } else {
-            trackScore = 0;
+            // Track should not be selected.
+            continue;
+          }
+          if (isSupported(trackFormatSupport[trackIndex], false)) {
+            trackScore += WITHIN_RENDERER_CAPABILITIES_BONUS;
           }
           if (trackScore > selectedTrackScore) {
             selectedGroup = trackGroup;
@@ -664,8 +1709,21 @@ public class DefaultTrackSelector extends MappingTrackSelector {
 
   // General track selection methods.
 
-  protected TrackSelection selectOtherTrack(int trackType, TrackGroupArray groups,
-      int[][] formatSupport) {
+  /**
+   * Called by {@link #selectAllTracks(MappedTrackInfo, int[][][], int[], Parameters)} to create a
+   * {@link TrackSelection} for a renderer whose type is neither video, audio or text.
+   *
+   * @param trackType The type of the renderer.
+   * @param groups The {@link TrackGroupArray} mapped to the renderer.
+   * @param formatSupport The result of {@link RendererCapabilities#supportsFormat} for each mapped
+   *     track, indexed by track group index and track index (in that order).
+   * @param params The selector's current constraint parameters.
+   * @return The {@link TrackSelection} for the renderer, or null if no selection was made.
+   * @throws ExoPlaybackException If an error occurs while selecting the tracks.
+   */
+  protected TrackSelection selectOtherTrack(
+      int trackType, TrackGroupArray groups, int[][] formatSupport, Parameters params)
+      throws ExoPlaybackException {
     TrackGroup selectedGroup = null;
     int selectedTrackIndex = 0;
     int selectedTrackScore = 0;
@@ -673,10 +1731,14 @@ public class DefaultTrackSelector extends MappingTrackSelector {
       TrackGroup trackGroup = groups.get(groupIndex);
       int[] trackFormatSupport = formatSupport[groupIndex];
       for (int trackIndex = 0; trackIndex < trackGroup.length; trackIndex++) {
-        if (isSupported(trackFormatSupport[trackIndex])) {
+        if (isSupported(trackFormatSupport[trackIndex],
+            params.exceedRendererCapabilitiesIfNecessary)) {
           Format format = trackGroup.getFormat(trackIndex);
           boolean isDefault = (format.selectionFlags & C.SELECTION_FLAG_DEFAULT) != 0;
           int trackScore = isDefault ? 2 : 1;
+          if (isSupported(trackFormatSupport[trackIndex], false)) {
+            trackScore += WITHIN_RENDERER_CAPABILITIES_BONUS;
+          }
           if (trackScore > selectedTrackScore) {
             selectedGroup = trackGroup;
             selectedTrackIndex = trackIndex;
@@ -689,16 +1751,150 @@ public class DefaultTrackSelector extends MappingTrackSelector {
         : new FixedTrackSelection(selectedGroup, selectedTrackIndex);
   }
 
-  private static boolean isSupported(int formatSupport) {
-    return (formatSupport & RendererCapabilities.FORMAT_SUPPORT_MASK)
-        == RendererCapabilities.FORMAT_HANDLED;
+  // Utility methods.
+
+  /**
+   * Determines whether tunneling should be enabled, replacing {@link RendererConfiguration}s in
+   * {@code rendererConfigurations} with configurations that enable tunneling on the appropriate
+   * renderers if so.
+   *
+   * @param mappedTrackInfo Mapped track information.
+   * @param rendererConfigurations The renderer configurations. Configurations may be replaced with
+   *     ones that enable tunneling as a result of this call.
+   * @param trackSelections The renderer track selections.
+   * @param tunnelingAudioSessionId The audio session id to use when tunneling, or {@link
+   *     C#AUDIO_SESSION_ID_UNSET} if tunneling should not be enabled.
+   */
+  private static void maybeConfigureRenderersForTunneling(
+      MappedTrackInfo mappedTrackInfo,
+      int[][][] renderererFormatSupports,
+      RendererConfiguration[] rendererConfigurations,
+      TrackSelection[] trackSelections,
+      int tunnelingAudioSessionId) {
+    if (tunnelingAudioSessionId == C.AUDIO_SESSION_ID_UNSET) {
+      return;
+    }
+    // Check whether we can enable tunneling. To enable tunneling we require exactly one audio and
+    // one video renderer to support tunneling and have a selection.
+    int tunnelingAudioRendererIndex = -1;
+    int tunnelingVideoRendererIndex = -1;
+    boolean enableTunneling = true;
+    for (int i = 0; i < mappedTrackInfo.getRendererCount(); i++) {
+      int rendererType = mappedTrackInfo.getRendererType(i);
+      TrackSelection trackSelection = trackSelections[i];
+      if ((rendererType == C.TRACK_TYPE_AUDIO || rendererType == C.TRACK_TYPE_VIDEO)
+          && trackSelection != null) {
+        if (rendererSupportsTunneling(
+            renderererFormatSupports[i], mappedTrackInfo.getTrackGroups(i), trackSelection)) {
+          if (rendererType == C.TRACK_TYPE_AUDIO) {
+            if (tunnelingAudioRendererIndex != -1) {
+              enableTunneling = false;
+              break;
+            } else {
+              tunnelingAudioRendererIndex = i;
+            }
+          } else {
+            if (tunnelingVideoRendererIndex != -1) {
+              enableTunneling = false;
+              break;
+            } else {
+              tunnelingVideoRendererIndex = i;
+            }
+          }
+        }
+      }
+    }
+    enableTunneling &= tunnelingAudioRendererIndex != -1 && tunnelingVideoRendererIndex != -1;
+    if (enableTunneling) {
+      RendererConfiguration tunnelingRendererConfiguration =
+          new RendererConfiguration(tunnelingAudioSessionId);
+      rendererConfigurations[tunnelingAudioRendererIndex] = tunnelingRendererConfiguration;
+      rendererConfigurations[tunnelingVideoRendererIndex] = tunnelingRendererConfiguration;
+    }
   }
 
-  private static boolean formatHasLanguage(Format format, String language) {
-    return language != null && language.equals(Util.normalizeLanguageCode(format.language));
+  /**
+   * Returns whether a renderer supports tunneling for a {@link TrackSelection}.
+   *
+   * @param formatSupports The result of {@link RendererCapabilities#supportsFormat} for each track,
+   *     indexed by group index and track index (in that order).
+   * @param trackGroups The {@link TrackGroupArray}s for the renderer.
+   * @param selection The track selection.
+   * @return Whether the renderer supports tunneling for the {@link TrackSelection}.
+   */
+  private static boolean rendererSupportsTunneling(
+      int[][] formatSupports, TrackGroupArray trackGroups, TrackSelection selection) {
+    if (selection == null) {
+      return false;
+    }
+    int trackGroupIndex = trackGroups.indexOf(selection.getTrackGroup());
+    for (int i = 0; i < selection.length(); i++) {
+      int trackFormatSupport = formatSupports[trackGroupIndex][selection.getIndexInTrackGroup(i)];
+      if ((trackFormatSupport & RendererCapabilities.TUNNELING_SUPPORT_MASK)
+          != RendererCapabilities.TUNNELING_SUPPORTED) {
+        return false;
+      }
+    }
+    return true;
   }
 
-  // Viewport size util methods.
+  /**
+   * Compares two format values for order. A known value is considered greater than {@link
+   * Format#NO_VALUE}.
+   *
+   * @param first The first value.
+   * @param second The second value.
+   * @return A negative integer if the first value is less than the second. Zero if they are equal.
+   *     A positive integer if the first value is greater than the second.
+   */
+  private static int compareFormatValues(int first, int second) {
+    return first == Format.NO_VALUE
+        ? (second == Format.NO_VALUE ? 0 : -1)
+        : (second == Format.NO_VALUE ? 1 : (first - second));
+  }
+
+  /**
+   * Applies the {@link RendererCapabilities#FORMAT_SUPPORT_MASK} to a value obtained from
+   * {@link RendererCapabilities#supportsFormat(Format)}, returning true if the result is
+   * {@link RendererCapabilities#FORMAT_HANDLED} or if {@code allowExceedsCapabilities} is set
+   * and the result is {@link RendererCapabilities#FORMAT_EXCEEDS_CAPABILITIES}.
+   *
+   * @param formatSupport A value obtained from {@link RendererCapabilities#supportsFormat(Format)}.
+   * @param allowExceedsCapabilities Whether to return true if the format support component of the
+   *     value is {@link RendererCapabilities#FORMAT_EXCEEDS_CAPABILITIES}.
+   * @return True if the format support component is {@link RendererCapabilities#FORMAT_HANDLED}, or
+   *     if {@code allowExceedsCapabilities} is set and the format support component is
+   *     {@link RendererCapabilities#FORMAT_EXCEEDS_CAPABILITIES}.
+   */
+  protected static boolean isSupported(int formatSupport, boolean allowExceedsCapabilities) {
+    int maskedSupport = formatSupport & RendererCapabilities.FORMAT_SUPPORT_MASK;
+    return maskedSupport == RendererCapabilities.FORMAT_HANDLED || (allowExceedsCapabilities
+        && maskedSupport == RendererCapabilities.FORMAT_EXCEEDS_CAPABILITIES);
+  }
+
+  /**
+   * Returns whether a {@link Format} does not define a language.
+   *
+   * @param format The {@link Format}.
+   * @return Whether the {@link Format} does not define a language.
+   */
+  protected static boolean formatHasNoLanguage(Format format) {
+    return TextUtils.isEmpty(format.language) || formatHasLanguage(format, C.LANGUAGE_UNDETERMINED);
+  }
+
+  /**
+   * Returns whether a {@link Format} specifies a particular language, or {@code false} if
+   * {@code language} is null.
+   *
+   * @param format The {@link Format}.
+   * @param language The language.
+   * @return Whether the format specifies the language, or {@code false} if {@code language} is
+   *     null.
+   */
+  protected static boolean formatHasLanguage(Format format, String language) {
+    return language != null
+        && TextUtils.equals(language, Util.normalizeLanguageCode(format.language));
+  }
 
   private static List<Integer> getViewportFilteredTrackIndices(TrackGroup group, int viewportWidth,
       int viewportHeight, boolean orientationMayChange) {
@@ -767,6 +1963,138 @@ public class DefaultTrackSelector extends MappingTrackSelector {
       // Vertical letter-boxing along edges.
       return new Point(Util.ceilDivide(viewportHeight * videoWidth, videoHeight), viewportHeight);
     }
+  }
+
+  /**
+   * A representation of how well a track fits with our track selection {@link Parameters}.
+   *
+   * <p>This is used to rank different audio tracks relatively with each other.
+   */
+  private static final class AudioTrackScore implements Comparable<AudioTrackScore> {
+    private final Parameters parameters;
+    private final int withinRendererCapabilitiesScore;
+    private final int matchLanguageScore;
+    private final int defaultSelectionFlagScore;
+    private final int channelCount;
+    private final int sampleRate;
+    private final int bitrate;
+
+    public AudioTrackScore(Format format, Parameters parameters, int formatSupport) {
+      this.parameters = parameters;
+      withinRendererCapabilitiesScore = isSupported(formatSupport, false) ? 1 : 0;
+      matchLanguageScore = formatHasLanguage(format, parameters.preferredAudioLanguage) ? 1 : 0;
+      defaultSelectionFlagScore = (format.selectionFlags & C.SELECTION_FLAG_DEFAULT) != 0 ? 1 : 0;
+      channelCount = format.channelCount;
+      sampleRate = format.sampleRate;
+      bitrate = format.bitrate;
+    }
+
+    /**
+     * Compares the score of the current track format with another {@link AudioTrackScore}.
+     *
+     * @param other The other score to compare to.
+     * @return A positive integer if this score is better than the other. Zero if they are equal. A
+     *     negative integer if this score is worse than the other.
+     */
+    @Override
+    public int compareTo(@NonNull AudioTrackScore other) {
+      if (this.withinRendererCapabilitiesScore != other.withinRendererCapabilitiesScore) {
+        return compareInts(this.withinRendererCapabilitiesScore,
+            other.withinRendererCapabilitiesScore);
+      } else if (this.matchLanguageScore != other.matchLanguageScore) {
+        return compareInts(this.matchLanguageScore, other.matchLanguageScore);
+      } else if (this.defaultSelectionFlagScore != other.defaultSelectionFlagScore) {
+        return compareInts(this.defaultSelectionFlagScore, other.defaultSelectionFlagScore);
+      } else if (parameters.forceLowestBitrate) {
+        return compareInts(other.bitrate, this.bitrate);
+      } else {
+        // If the format are within renderer capabilities, prefer higher values of channel count,
+        // sample rate and bit rate in that order. Otherwise, prefer lower values.
+        int resultSign = withinRendererCapabilitiesScore == 1 ? 1 : -1;
+        if (this.channelCount != other.channelCount) {
+          return resultSign * compareInts(this.channelCount, other.channelCount);
+        } else if (this.sampleRate != other.sampleRate) {
+          return resultSign * compareInts(this.sampleRate, other.sampleRate);
+        }
+        return resultSign * compareInts(this.bitrate, other.bitrate);
+      }
+    }
+
+    @Override
+    public boolean equals(@Nullable Object o) {
+      if (this == o) {
+        return true;
+      }
+      if (o == null || getClass() != o.getClass()) {
+        return false;
+      }
+
+      AudioTrackScore that = (AudioTrackScore) o;
+
+      return withinRendererCapabilitiesScore == that.withinRendererCapabilitiesScore
+          && matchLanguageScore == that.matchLanguageScore
+          && defaultSelectionFlagScore == that.defaultSelectionFlagScore
+          && channelCount == that.channelCount && sampleRate == that.sampleRate
+          && bitrate == that.bitrate;
+    }
+
+    @Override
+    public int hashCode() {
+      int result = withinRendererCapabilitiesScore;
+      result = 31 * result + matchLanguageScore;
+      result = 31 * result + defaultSelectionFlagScore;
+      result = 31 * result + channelCount;
+      result = 31 * result + sampleRate;
+      result = 31 * result + bitrate;
+      return result;
+    }
+  }
+
+  /**
+   * Compares two integers in a safe way and avoiding potential overflow.
+   *
+   * @param first The first value.
+   * @param second The second value.
+   * @return A negative integer if the first value is less than the second. Zero if they are equal.
+   *     A positive integer if the first value is greater than the second.
+   */
+  private static int compareInts(int first, int second) {
+    return first > second ? 1 : (second > first ? -1 : 0);
+  }
+
+  private static final class AudioConfigurationTuple {
+
+    public final int channelCount;
+    public final int sampleRate;
+    public final String mimeType;
+
+    public AudioConfigurationTuple(int channelCount, int sampleRate, String mimeType) {
+      this.channelCount = channelCount;
+      this.sampleRate = sampleRate;
+      this.mimeType = mimeType;
+    }
+
+    @Override
+    public boolean equals(@Nullable Object obj) {
+      if (this == obj) {
+        return true;
+      }
+      if (obj == null || getClass() != obj.getClass()) {
+        return false;
+      }
+      AudioConfigurationTuple other = (AudioConfigurationTuple) obj;
+      return channelCount == other.channelCount && sampleRate == other.sampleRate
+          && TextUtils.equals(mimeType, other.mimeType);
+    }
+
+    @Override
+    public int hashCode() {
+      int result = channelCount;
+      result = 31 * result + sampleRate;
+      result = 31 * result + (mimeType != null ? mimeType.hashCode() : 0);
+      return result;
+    }
+
   }
 
 }

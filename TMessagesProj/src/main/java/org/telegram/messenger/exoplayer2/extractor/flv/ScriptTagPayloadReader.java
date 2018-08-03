@@ -17,7 +17,6 @@ package org.telegram.messenger.exoplayer2.extractor.flv;
 
 import org.telegram.messenger.exoplayer2.C;
 import org.telegram.messenger.exoplayer2.ParserException;
-import org.telegram.messenger.exoplayer2.extractor.TrackOutput;
 import org.telegram.messenger.exoplayer2.util.ParsableByteArray;
 import java.util.ArrayList;
 import java.util.Date;
@@ -44,11 +43,8 @@ import java.util.Map;
 
   private long durationUs;
 
-  /**
-   * @param output A {@link TrackOutput} to which samples should be written.
-   */
-  public ScriptTagPayloadReader(TrackOutput output) {
-    super(output);
+  public ScriptTagPayloadReader() {
+    super(null);
     durationUs = C.TIME_UNSET;
   }
 
@@ -80,8 +76,8 @@ import java.util.Map;
     }
     int type = readAmfType(data);
     if (type != AMF_TYPE_ECMA_ARRAY) {
-      // Should never happen.
-      throw new ParserException();
+      // We're not interested in this metadata.
+      return;
     }
     // Set the duration to the value contained in the metadata, if present.
     Map<String, Object> metadata = readAmfEcmaArray(data);

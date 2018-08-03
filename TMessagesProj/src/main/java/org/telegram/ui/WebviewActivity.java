@@ -14,8 +14,11 @@ import android.animation.AnimatorSet;
 import android.animation.ObjectAnimator;
 import android.annotation.SuppressLint;
 import android.app.Activity;
+import android.content.ComponentName;
 import android.content.Context;
+import android.content.Intent;
 import android.content.SharedPreferences;
+import android.net.Uri;
 import android.os.Build;
 import android.text.TextUtils;
 import android.view.View;
@@ -29,6 +32,7 @@ import android.widget.FrameLayout;
 
 import org.telegram.messenger.AndroidUtilities;
 import org.telegram.messenger.ApplicationLoader;
+import org.telegram.messenger.BuildVars;
 import org.telegram.messenger.FileLog;
 import org.telegram.messenger.LocaleController;
 import org.telegram.messenger.MessageObject;
@@ -74,7 +78,9 @@ public class WebviewActivity extends BaseFragment {
                     if (getParentActivity() == null) {
                         return;
                     }
-                    FileLog.e(eventName);
+                    if (BuildVars.LOGS_ENABLED) {
+                        FileLog.d(eventName);
+                    }
                     switch (eventName) {
                         case "share_game":
                             currentMessageObject.messageOwner.with_my_score = false;
@@ -83,7 +89,7 @@ public class WebviewActivity extends BaseFragment {
                             currentMessageObject.messageOwner.with_my_score = true;
                             break;
                     }
-                    showDialog(new ShareAlert(getParentActivity(), currentMessageObject, null, false, linkToCopy, false));
+                    showDialog(ShareAlert.createShareAlert(getParentActivity(), currentMessageObject, null, false, linkToCopy, false));
                 }
             });
         }
@@ -95,7 +101,7 @@ public class WebviewActivity extends BaseFragment {
             if (currentMessageObject == null || getParentActivity() == null || typingRunnable == null) {
                 return;
             }
-            MessagesController.getInstance().sendTyping(currentMessageObject.getDialogId(), 6, 0);
+            MessagesController.getInstance(currentAccount).sendTyping(currentMessageObject.getDialogId(), 6, 0);
             AndroidUtilities.runOnUIThread(typingRunnable, 25000);
         }
     };
@@ -107,7 +113,7 @@ public class WebviewActivity extends BaseFragment {
         currentGame = gameName;
         currentMessageObject = messageObject;
         short_param = startParam;
-        linkToCopy = "https://" + MessagesController.getInstance().linkPrefix + "/" + currentBot + (TextUtils.isEmpty(startParam) ? "" : "?game=" + startParam);
+        linkToCopy = "https://" + MessagesController.getInstance(currentAccount).linkPrefix + "/" + currentBot + (TextUtils.isEmpty(startParam) ? "" : "?game=" + startParam);
     }
 
     @Override
@@ -144,7 +150,7 @@ public class WebviewActivity extends BaseFragment {
                     finishFragment();
                 } else if (id == share) {
                     currentMessageObject.messageOwner.with_my_score = false;
-                    showDialog(new ShareAlert(getParentActivity(), currentMessageObject, null, false, linkToCopy, false));
+                    showDialog(ShareAlert.createShareAlert(getParentActivity(), currentMessageObject, null, false, linkToCopy, false));
                 } else if (id == open_in) {
                     openGameInBrowser(currentUrl, currentMessageObject, getParentActivity(), short_param, currentBot);
                 }
@@ -174,9 +180,39 @@ public class WebviewActivity extends BaseFragment {
         }
 
         webView.setWebViewClient(new WebViewClient() {
+
+            private boolean isInternalUrl(String url) {
+                if (TextUtils.isEmpty(url)) {
+                    return false;
+                }
+                Uri uri = Uri.parse(url);
+                if ("tg".equals(uri.getScheme())) {
+                    finishFragment(false);
+                    try {
+                        Intent intent = new Intent(Intent.ACTION_VIEW, uri);
+                        ComponentName componentName = new ComponentName(ApplicationLoader.applicationContext.getPackageName(), LaunchActivity.class.getName());
+                        intent.setComponent(componentName);
+                        intent.putExtra(android.provider.Browser.EXTRA_APPLICATION_ID, ApplicationLoader.applicationContext.getPackageName());
+                        ApplicationLoader.applicationContext.startActivity(intent);
+                    } catch (Exception e) {
+                        FileLog.e(e);
+                    }
+                    return true;
+                }
+                return false;
+            }
+
             @Override
             public void onLoadResource(WebView view, String url) {
+                if (isInternalUrl(url)) {
+                    return;
+                }
                 super.onLoadResource(view, url);
+            }
+
+            @Override
+            public boolean shouldOverrideUrlLoading(WebView view, String url) {
+                return isInternalUrl(url) || super.shouldOverrideUrlLoading(view, url);
             }
 
             @Override
@@ -268,9 +304,10 @@ public class WebviewActivity extends BaseFragment {
             SerializedData serializedData = new SerializedData(messageObject.messageOwner.getObjectSize());
             messageObject.messageOwner.serializeToStream(serializedData);
             editor.putString(hash + "_m", Utilities.bytesToHex(serializedData.toByteArray()));
-            editor.putString(hash + "_link", "https://" + MessagesController.getInstance().linkPrefix + "/" + username + (TextUtils.isEmpty(short_name) ? "" : "?game=" + short_name));
+            editor.putString(hash + "_link", "https://" + MessagesController.getInstance(messageObject.currentAccount).linkPrefix + "/" + username + (TextUtils.isEmpty(short_name) ? "" : "?game=" + short_name));
             editor.commit();
             Browser.openUrl(parentActivity, url, false);
+            serializedData.cleanup();
         } catch (Exception e) {
             FileLog.e(e);
         }

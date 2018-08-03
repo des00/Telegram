@@ -31,10 +31,11 @@ import java.util.List;
  * @see <a href="https://w3c.github.io/webvtt/#applying-css-properties">W3C specification - Apply
  *     CSS properties</a>
  */
-/* package */ final class WebvttCssStyle {
+public final class WebvttCssStyle {
 
   public static final int UNSPECIFIED = -1;
 
+  /** Style flag enum */
   @Retention(RetentionPolicy.SOURCE)
   @IntDef(flag = true, value = {UNSPECIFIED, STYLE_NORMAL, STYLE_BOLD, STYLE_ITALIC,
       STYLE_BOLD_ITALIC})
@@ -44,6 +45,7 @@ import java.util.List;
   public static final int STYLE_ITALIC = Typeface.ITALIC;
   public static final int STYLE_BOLD_ITALIC = Typeface.BOLD_ITALIC;
 
+  /** Font size unit enum */
   @Retention(RetentionPolicy.SOURCE)
   @IntDef({UNSPECIFIED, FONT_SIZE_UNIT_PIXEL, FONT_SIZE_UNIT_EM, FONT_SIZE_UNIT_PERCENT})
   public @interface FontSizeUnit {}
@@ -69,16 +71,11 @@ import java.util.List;
   private boolean hasFontColor;
   private int backgroundColor;
   private boolean hasBackgroundColor;
-  @OptionalBoolean
-  private int linethrough;
-  @OptionalBoolean
-  private int underline;
-  @OptionalBoolean
-  private int bold;
-  @OptionalBoolean
-  private int italic;
-  @FontSizeUnit
-  private int fontSizeUnit;
+  @OptionalBoolean private int linethrough;
+  @OptionalBoolean private int underline;
+  @OptionalBoolean private int bold;
+  @OptionalBoolean private int italic;
+  @FontSizeUnit private int fontSizeUnit;
   private float fontSize;
   private Layout.Alignment textAlign;
 
@@ -162,8 +159,7 @@ import java.util.List;
    * @return {@link #UNSPECIFIED}, {@link #STYLE_NORMAL}, {@link #STYLE_BOLD}, {@link #STYLE_BOLD}
    *     or {@link #STYLE_BOLD_ITALIC}.
    */
-  @StyleFlags
-  public int getStyle() {
+  @StyleFlags public int getStyle() {
     if (bold == UNSPECIFIED && italic == UNSPECIFIED) {
       return UNSPECIFIED;
     }
@@ -260,8 +256,7 @@ import java.util.List;
     return this;
   }
 
-  @FontSizeUnit
-  public int getFontSizeUnit() {
+  @FontSizeUnit public int getFontSizeUnit() {
     return fontSizeUnit;
   }
 

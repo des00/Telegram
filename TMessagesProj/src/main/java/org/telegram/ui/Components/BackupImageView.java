@@ -11,12 +11,15 @@ package org.telegram.ui.Components;
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
+import android.graphics.PorterDuff;
+import android.graphics.PorterDuffColorFilter;
 import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.Drawable;
 import android.util.AttributeSet;
 import android.view.View;
 
 import org.telegram.messenger.ImageReceiver;
+import org.telegram.messenger.SecureDocument;
 import org.telegram.tgnet.TLObject;
 import org.telegram.tgnet.TLRPC;
 
@@ -43,6 +46,10 @@ public class BackupImageView extends View {
 
     private void init() {
         imageReceiver = new ImageReceiver(this);
+    }
+
+    public void setImage(SecureDocument path, String filter) {
+        setImage(path, null, filter, null, null, null, null, null, 0);
     }
 
     public void setImage(TLObject path, String filter, String ext, Drawable thumb) {
@@ -81,7 +88,7 @@ public class BackupImageView extends View {
         if (thumbBitmap != null) {
             thumb = new BitmapDrawable(null, thumbBitmap);
         }
-        imageReceiver.setImage(path, httpUrl, filter, thumb, thumbLocation, thumbFilter, size, ext, false);
+        imageReceiver.setImage(path, httpUrl, filter, thumb, thumbLocation, thumbFilter, size, ext, 0);
     }
 
     public void setImageBitmap(Bitmap bitmap) {
@@ -94,12 +101,26 @@ public class BackupImageView extends View {
         invalidate();
     }
 
+    public void setImageResource(int resId, int color) {
+        Drawable drawable = getResources().getDrawable(resId);
+        if (drawable != null) {
+            drawable.setColorFilter(new PorterDuffColorFilter(color, PorterDuff.Mode.MULTIPLY));
+        }
+        imageReceiver.setImageBitmap(drawable);
+        invalidate();
+    }
+
     public void setImageDrawable(Drawable drawable) {
         imageReceiver.setImageBitmap(drawable);
     }
 
     public void setRoundRadius(int value) {
         imageReceiver.setRoundRadius(value);
+        invalidate();
+    }
+
+    public int getRoundRadius() {
+        return imageReceiver.getRoundRadius();
     }
 
     public void setAspectFit(boolean value) {

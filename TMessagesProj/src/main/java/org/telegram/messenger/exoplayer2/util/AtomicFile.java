@@ -13,9 +13,9 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.telegram.messenger.exoplayer2.util;
 
+import android.support.annotation.NonNull;
 import android.util.Log;
 import java.io.File;
 import java.io.FileInputStream;
@@ -104,12 +104,12 @@ public final class AtomicFile {
     } catch (FileNotFoundException e) {
       File parent = baseName.getParentFile();
       if (!parent.mkdirs()) {
-        throw new IOException("Couldn't create directory " + baseName);
+        throw new IOException("Couldn't create directory " + baseName, e);
       }
       try {
         str = new AtomicFileOutputStream(baseName);
       } catch (FileNotFoundException e2) {
-        throw new IOException("Couldn't create " + baseName);
+        throw new IOException("Couldn't create " + baseName, e2);
       }
     }
     return str;
@@ -185,12 +185,12 @@ public final class AtomicFile {
     }
 
     @Override
-    public void write(byte[] b) throws IOException {
+    public void write(@NonNull byte[] b) throws IOException {
       fileOutputStream.write(b);
     }
 
     @Override
-    public void write(byte[] b, int off, int len) throws IOException {
+    public void write(@NonNull byte[] b, int off, int len) throws IOException {
       fileOutputStream.write(b, off, len);
     }
   }

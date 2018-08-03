@@ -17,6 +17,7 @@ import android.media.audiofx.NoiseSuppressor;
 import android.os.Build;
 import android.util.Log;
 
+import org.telegram.messenger.BuildVars;
 import org.telegram.messenger.FileLog;
 
 import java.nio.ByteBuffer;
@@ -32,27 +33,48 @@ public class AudioRecordJNI {
 	private AutomaticGainControl agc;
 	private NoiseSuppressor ns;
 	private AcousticEchoCanceler aec;
+	private boolean needResampling=false;
 
 	public AudioRecordJNI(long nativeInst) {
 		this.nativeInst = nativeInst;
 	}
 
-	private int getBufferSize(int min) {
-		return Math.max(AudioRecord.getMinBufferSize(48000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT), min);
+	private int getBufferSize(int min, int sampleRate) {
+		return Math.max(AudioRecord.getMinBufferSize(sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT), min);
 	}
 
 	public void init(int sampleRate, int bitsPerSample, int channels, int bufferSize) {
 		if (audioRecord != null) {
 			throw new IllegalStateException("already inited");
 		}
-		int size = getBufferSize(bufferSize);
 		this.bufferSize = bufferSize;
+		boolean res=tryInit(MediaRecorder.AudioSource.VOICE_COMMUNICATION, 48000);
+		if(!res)
+			tryInit(MediaRecorder.AudioSource.MIC, 48000);
+		if(!res)
+			tryInit(MediaRecorder.AudioSource.VOICE_COMMUNICATION, 44100);
+		if(!res)
+			tryInit(MediaRecorder.AudioSource.MIC, 44100);
+		buffer = ByteBuffer.allocateDirect(bufferSize);
+	}
+
+	private boolean tryInit(int source, int sampleRate){
+		if(audioRecord!=null){
+			try{
+				audioRecord.release();
+			}catch(Exception ignore){}
+		}
+		if (BuildVars.LOGS_ENABLED) {
+			FileLog.d("Trying to initialize AudioRecord with source=" + source + " and sample rate=" + sampleRate);
+		}
+		int size = getBufferSize(bufferSize, 48000);
 		try{
-			audioRecord=new AudioRecord(MediaRecorder.AudioSource.VOICE_COMMUNICATION, sampleRate, channels==1 ? AudioFormat.CHANNEL_IN_MONO : AudioFormat.CHANNEL_IN_STEREO, AudioFormat.ENCODING_PCM_16BIT, size);
+			audioRecord=new AudioRecord(source, sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, size);
 		}catch(Exception x){
 			FileLog.e("AudioRecord init failed!", x);
 		}
-		buffer = ByteBuffer.allocateDirect(bufferSize);
+		needResampling=sampleRate!=48000;
+		return audioRecord!=null && audioRecord.getState()==AudioRecord.STATE_INITIALIZED;
 	}
 
 	public void stop() {
@@ -101,10 +123,14 @@ public class AudioRecordJNI {
 								if(agc!=null)
 									agc.setEnabled(false);
 							}else{
-								FileLog.w("AutomaticGainControl is not available on this device :(");
+								if (BuildVars.LOGS_ENABLED) {
+									FileLog.w("AutomaticGainControl is not available on this device :(");
+								}
 							}
 						}catch(Throwable x){
-							FileLog.e("error creating AutomaticGainControl", x);
+							if (BuildVars.LOGS_ENABLED) {
+								FileLog.e("error creating AutomaticGainControl", x);
+							}
 						}
 						try{
 							if(NoiseSuppressor.isAvailable()){
@@ -112,10 +138,14 @@ public class AudioRecordJNI {
 								if(ns!=null)
 									ns.setEnabled(VoIPServerConfig.getBoolean("user_system_ns", true));
 							}else{
-								FileLog.w("NoiseSuppressor is not available on this device :(");
+								if (BuildVars.LOGS_ENABLED) {
+									FileLog.w("NoiseSuppressor is not available on this device :(");
+								}
 							}
 						}catch(Throwable x){
-							FileLog.e("error creating NoiseSuppressor", x);
+							if (BuildVars.LOGS_ENABLED) {
+								FileLog.e("error creating NoiseSuppressor", x);
+							}
 						}
 						try{
 							if(AcousticEchoCanceler.isAvailable()){
@@ -123,10 +153,14 @@ public class AudioRecordJNI {
 								if(aec!=null)
 									aec.setEnabled(VoIPServerConfig.getBoolean("use_system_aec", true));
 							}else{
-								FileLog.w("AcousticEchoCanceler is not available on this device");
+								if (BuildVars.LOGS_ENABLED) {
+									FileLog.w("AcousticEchoCanceler is not available on this device");
+								}
 							}
 						}catch(Throwable x){
-							FileLog.e("error creating AcousticEchoCanceler", x);
+							if (BuildVars.LOGS_ENABLED) {
+								FileLog.e("error creating AcousticEchoCanceler", x);
+							}
 						}
 					}
 				startThread();
@@ -135,7 +169,9 @@ public class AudioRecordJNI {
 			}
 			return true;
 		}catch(Exception x){
-			FileLog.e("Error initializing AudioRecord", x);
+			if (BuildVars.LOGS_ENABLED) {
+				FileLog.e("Error initializing AudioRecord", x);
+			}
 		}
 		return false;
 	}
@@ -145,12 +181,18 @@ public class AudioRecordJNI {
 			throw new IllegalStateException("thread already started");
 		}
 		running = true;
+		final ByteBuffer tmpBuf=needResampling ? ByteBuffer.allocateDirect(882*2) : null;
 		thread = new Thread(new Runnable() {
 			@Override
 			public void run() {
 				while (running) {
 					try {
-						audioRecord.read(buffer, 960*2);
+						if(!needResampling){
+							audioRecord.read(buffer, 960*2);
+						}else{
+							audioRecord.read(tmpBuf, 882*2);
+							Resampler.convert44to48(tmpBuf, buffer);
+						}
 						if (!running) {
 							audioRecord.stop();
 							break;
@@ -160,7 +202,8 @@ public class AudioRecordJNI {
 						FileLog.e(e);
 					}
 				}
-				Log.i("tg-voip", "audiotrack thread exits");
+				if(BuildVars.LOGS_ENABLED)
+					Log.i("tg-voip", "audiorecord thread exits");
 			}
 		});
 		thread.start();

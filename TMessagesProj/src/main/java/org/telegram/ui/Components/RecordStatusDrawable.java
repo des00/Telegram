@@ -11,12 +11,11 @@ package org.telegram.ui.Components;
 import android.graphics.Canvas;
 import android.graphics.ColorFilter;
 import android.graphics.RectF;
-import android.graphics.drawable.Drawable;
 
 import org.telegram.messenger.AndroidUtilities;
 import org.telegram.ui.ActionBar.Theme;
 
-public class RecordStatusDrawable extends Drawable {
+public class RecordStatusDrawable extends StatusDrawable {
 
     private boolean isChat = false;
     private long lastUpdateTime = 0;
@@ -35,7 +34,7 @@ public class RecordStatusDrawable extends Drawable {
         if (dt > 50) {
             dt = 50;
         }
-        progress += dt / 300.0f;
+        progress += dt / 800.0f;
         while (progress > 1.0f) {
             progress -= 1.0f;
         }

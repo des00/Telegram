@@ -17,6 +17,7 @@ package org.telegram.messenger.exoplayer2.upstream;
 
 import android.net.Uri;
 import android.support.annotation.IntDef;
+import android.support.annotation.Nullable;
 import org.telegram.messenger.exoplayer2.C;
 import org.telegram.messenger.exoplayer2.util.Assertions;
 import java.lang.annotation.Retention;
@@ -32,7 +33,7 @@ public final class DataSpec {
    * The flags that apply to any request for data.
    */
   @Retention(RetentionPolicy.SOURCE)
-  @IntDef(flag = true, value = {FLAG_ALLOW_GZIP})
+  @IntDef(flag = true, value = {FLAG_ALLOW_GZIP, FLAG_ALLOW_CACHING_UNKNOWN_LENGTH})
   public @interface Flags {}
   /**
    * Permits an underlying network stack to request that the server use gzip compression.
@@ -45,7 +46,13 @@ public final class DataSpec {
    * {@link DataSource#open(DataSpec)} will typically be {@link C#LENGTH_UNSET}. The data read from
    * {@link DataSource#read(byte[], int, int)} will be the decompressed data.
    */
-  public static final int FLAG_ALLOW_GZIP = 1;
+  public static final int FLAG_ALLOW_GZIP = 1 << 0;
+
+  /**
+   * Permits content to be cached even if its length can not be resolved. Typically this's the case
+   * for progressive live streams and when {@link #FLAG_ALLOW_GZIP} is used.
+   */
+  public static final int FLAG_ALLOW_CACHING_UNKNOWN_LENGTH = 1 << 1;
 
   /**
    * The source from which data should be read.
@@ -54,7 +61,7 @@ public final class DataSpec {
   /**
    * Body for a POST request, null otherwise.
    */
-  public final byte[] postBody;
+  public final @Nullable byte[] postBody;
   /**
    * The absolute position of the data in the full stream.
    */
@@ -63,7 +70,7 @@ public final class DataSpec {
    * The position of the data when read from {@link #uri}.
    * <p>
    * Always equal to {@link #absoluteStreamPosition} unless the {@link #uri} defines the location
-   * of a subset of the underyling data.
+   * of a subset of the underlying data.
    */
   public final long position;
   /**
@@ -74,12 +81,12 @@ public final class DataSpec {
    * A key that uniquely identifies the original stream. Used for cache indexing. May be null if the
    * {@link DataSpec} is not intended to be used in conjunction with a cache.
    */
-  public final String key;
+  public final @Nullable String key;
   /**
-   * Request flags. Currently {@link #FLAG_ALLOW_GZIP} is the only supported flag.
+   * Request flags. Currently {@link #FLAG_ALLOW_GZIP} and
+   * {@link #FLAG_ALLOW_CACHING_UNKNOWN_LENGTH} are the only supported flags.
    */
-  @Flags
-  public final int flags;
+  public final @Flags int flags;
 
   /**
    * Construct a {@link DataSpec} for the given uri and with {@link #key} set to null.
@@ -108,7 +115,7 @@ public final class DataSpec {
    * @param length {@link #length}.
    * @param key {@link #key}.
    */
-  public DataSpec(Uri uri, long absoluteStreamPosition, long length, String key) {
+  public DataSpec(Uri uri, long absoluteStreamPosition, long length, @Nullable String key) {
     this(uri, absoluteStreamPosition, absoluteStreamPosition, length, key, 0);
   }
 
@@ -121,7 +128,8 @@ public final class DataSpec {
    * @param key {@link #key}.
    * @param flags {@link #flags}.
    */
-  public DataSpec(Uri uri, long absoluteStreamPosition, long length, String key, @Flags int flags) {
+  public DataSpec(
+      Uri uri, long absoluteStreamPosition, long length, @Nullable String key, @Flags int flags) {
     this(uri, absoluteStreamPosition, absoluteStreamPosition, length, key, flags);
   }
 
@@ -136,14 +144,19 @@ public final class DataSpec {
    * @param key {@link #key}.
    * @param flags {@link #flags}.
    */
-  public DataSpec(Uri uri, long absoluteStreamPosition, long position, long length, String key,
+  public DataSpec(
+      Uri uri,
+      long absoluteStreamPosition,
+      long position,
+      long length,
+      @Nullable String key,
       @Flags int flags) {
     this(uri, null, absoluteStreamPosition, position, length, key, flags);
   }
 
   /**
-   * Construct a {@link DataSpec} where {@link #position} may differ from
-   * {@link #absoluteStreamPosition}.
+   * Construct a {@link DataSpec} where {@link #position} may differ from {@link
+   * #absoluteStreamPosition}.
    *
    * @param uri {@link #uri}.
    * @param postBody {@link #postBody}.
@@ -153,8 +166,14 @@ public final class DataSpec {
    * @param key {@link #key}.
    * @param flags {@link #flags}.
    */
-  public DataSpec(Uri uri, byte[] postBody, long absoluteStreamPosition, long position, long length,
-      String key, @Flags int flags) {
+  public DataSpec(
+      Uri uri,
+      @Nullable byte[] postBody,
+      long absoluteStreamPosition,
+      long position,
+      long length,
+      @Nullable String key,
+      @Flags int flags) {
     Assertions.checkArgument(absoluteStreamPosition >= 0);
     Assertions.checkArgument(position >= 0);
     Assertions.checkArgument(length > 0 || length == C.LENGTH_UNSET);
@@ -167,10 +186,55 @@ public final class DataSpec {
     this.flags = flags;
   }
 
+  /**
+   * Returns whether the given flag is set.
+   *
+   * @param flag Flag to be checked if it is set.
+   */
+  public boolean isFlagSet(@Flags int flag) {
+    return (this.flags & flag) == flag;
+  }
+
   @Override
   public String toString() {
     return "DataSpec[" + uri + ", " + Arrays.toString(postBody) + ", " + absoluteStreamPosition
         + ", "  + position + ", " + length + ", " + key + ", " + flags + "]";
   }
 
+  /**
+   * Returns a {@link DataSpec} that represents a subrange of the data defined by this DataSpec. The
+   * subrange includes data from the offset up to the end of this DataSpec.
+   *
+   * @param offset The offset of the subrange.
+   * @return A {@link DataSpec} that represents a subrange of the data defined by this DataSpec.
+   */
+  public DataSpec subrange(long offset) {
+    return subrange(offset, length == C.LENGTH_UNSET ? C.LENGTH_UNSET : length - offset);
+  }
+
+  /**
+   * Returns a {@link DataSpec} that represents a subrange of the data defined by this DataSpec.
+   *
+   * @param offset The offset of the subrange.
+   * @param length The length of the subrange.
+   * @return A {@link DataSpec} that represents a subrange of the data defined by this DataSpec.
+   */
+  public DataSpec subrange(long offset, long length) {
+    if (offset == 0 && this.length == length) {
+      return this;
+    } else {
+      return new DataSpec(uri, postBody, absoluteStreamPosition + offset, position + offset, length,
+          key, flags);
+    }
+  }
+
+  /**
+   * Returns a copy of this {@link DataSpec} with the specified Uri.
+   *
+   * @param uri The new source {@link Uri}.
+   * @return The copied {@link DataSpec} with the specified Uri.
+   */
+  public DataSpec withUri(Uri uri) {
+    return new DataSpec(uri, postBody, absoluteStreamPosition, position, length, key, flags);
+  }
 }

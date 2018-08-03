@@ -15,7 +15,7 @@
  */
 package org.telegram.messenger.exoplayer2.upstream.cache;
 
-import org.telegram.messenger.exoplayer2.C;
+import android.support.annotation.Nullable;
 import org.telegram.messenger.exoplayer2.upstream.cache.Cache.CacheException;
 import org.telegram.messenger.exoplayer2.util.Assertions;
 import java.io.DataInputStream;
@@ -28,31 +28,41 @@ import java.util.TreeSet;
  */
 /*package*/ final class CachedContent {
 
-  /**
-   * The cache file id that uniquely identifies the original stream.
-   */
+  private static final int VERSION_METADATA_INTRODUCED = 2;
+  private static final int VERSION_MAX = Integer.MAX_VALUE;
+
+  /** The cache file id that uniquely identifies the original stream. */
   public final int id;
-  /**
-   * The cache key that uniquely identifies the original stream.
-   */
+  /** The cache key that uniquely identifies the original stream. */
   public final String key;
-  /**
-   * The cached spans of this content.
-   */
+  /** The cached spans of this content. */
   private final TreeSet<SimpleCacheSpan> cachedSpans;
-  /**
-   * The length of the original stream, or {@link C#LENGTH_UNSET} if the length is unknown.
-   */
-  private long length;
+  /** Metadata values. */
+  private DefaultContentMetadata metadata;
+  /** Whether the content is locked. */
+  private boolean locked;
 
   /**
    * Reads an instance from a {@link DataInputStream}.
    *
+   * @param version Version of the encoded data.
    * @param input Input stream containing values needed to initialize CachedContent instance.
    * @throws IOException If an error occurs during reading values.
    */
-  public CachedContent(DataInputStream input) throws IOException {
-    this(input.readInt(), input.readUTF(), input.readLong());
+  public static CachedContent readFromStream(int version, DataInputStream input)
+      throws IOException {
+    int id = input.readInt();
+    String key = input.readUTF();
+    CachedContent cachedContent = new CachedContent(id, key);
+    if (version < VERSION_METADATA_INTRODUCED) {
+      long length = input.readLong();
+      ContentMetadataMutations mutations = new ContentMetadataMutations();
+      ContentMetadataInternal.setContentLength(mutations, length);
+      cachedContent.applyMetadataMutations(mutations);
+    } else {
+      cachedContent.metadata = DefaultContentMetadata.readFromStream(input);
+    }
+    return cachedContent;
   }
 
   /**
@@ -60,12 +70,11 @@ import java.util.TreeSet;
    *
    * @param id The cache file id.
    * @param key The cache stream key.
-   * @param length The length of the original stream.
    */
-  public CachedContent(int id, String key, long length) {
+  public CachedContent(int id, String key) {
     this.id = id;
     this.key = key;
-    this.length = length;
+    this.metadata = DefaultContentMetadata.EMPTY;
     this.cachedSpans = new TreeSet<>();
   }
 
@@ -78,17 +87,33 @@ import java.util.TreeSet;
   public void writeToStream(DataOutputStream output) throws IOException {
     output.writeInt(id);
     output.writeUTF(key);
-    output.writeLong(length);
+    metadata.writeToStream(output);
   }
 
-  /** Returns the length of the content. */
-  public long getLength() {
-    return length;
+  /** Returns the metadata. */
+  public ContentMetadata getMetadata() {
+    return metadata;
   }
 
-  /** Sets the length of the content. */
-  public void setLength(long length) {
-    this.length = length;
+  /**
+   * Applies {@code mutations} to the metadata.
+   *
+   * @return Whether {@code mutations} changed any metadata.
+   */
+  public boolean applyMetadataMutations(ContentMetadataMutations mutations) {
+    DefaultContentMetadata oldMetadata = metadata;
+    metadata = metadata.copyWithMutationsApplied(mutations);
+    return !metadata.equals(oldMetadata);
+  }
+
+  /** Returns whether the content is locked. */
+  public boolean isLocked() {
+    return locked;
+  }
+
+  /** Sets the locked state of the content. */
+  public void setLocked(boolean locked) {
+    this.locked = locked;
   }
 
   /** Adds the given {@link SimpleCacheSpan} which contains a part of the content. */
@@ -106,43 +131,49 @@ import java.util.TreeSet;
    * which defines the maximum extents of the hole in the cache.
    */
   public SimpleCacheSpan getSpan(long position) {
-    SimpleCacheSpan span = getSpanInternal(position);
-    if (!span.isCached) {
-      SimpleCacheSpan ceilEntry = cachedSpans.ceiling(span);
-      return ceilEntry == null ? SimpleCacheSpan.createOpenHole(key, position)
-          : SimpleCacheSpan.createClosedHole(key, position, ceilEntry.position - position);
+    SimpleCacheSpan lookupSpan = SimpleCacheSpan.createLookup(key, position);
+    SimpleCacheSpan floorSpan = cachedSpans.floor(lookupSpan);
+    if (floorSpan != null && floorSpan.position + floorSpan.length > position) {
+      return floorSpan;
     }
-    return span;
+    SimpleCacheSpan ceilSpan = cachedSpans.ceiling(lookupSpan);
+    return ceilSpan == null ? SimpleCacheSpan.createOpenHole(key, position)
+        : SimpleCacheSpan.createClosedHole(key, position, ceilSpan.position - position);
   }
 
-  /** Queries if a range is entirely available in the cache. */
-  public boolean isCached(long position, long length) {
-    SimpleCacheSpan floorSpan = getSpanInternal(position);
-    if (!floorSpan.isCached) {
+  /**
+   * Returns the length of the cached data block starting from the {@code position} to the block end
+   * up to {@code length} bytes. If the {@code position} isn't cached then -(the length of the gap
+   * to the next cached data up to {@code length} bytes) is returned.
+   *
+   * @param position The starting position of the data.
+   * @param length The maximum length of the data to be returned.
+   * @return the length of the cached or not cached data block length.
+   */
+  public long getCachedBytesLength(long position, long length) {
+    SimpleCacheSpan span = getSpan(position);
+    if (span.isHoleSpan()) {
       // We don't have a span covering the start of the queried region.
-      return false;
+      return -Math.min(span.isOpenEnded() ? Long.MAX_VALUE : span.length, length);
     }
     long queryEndPosition = position + length;
-    long currentEndPosition = floorSpan.position + floorSpan.length;
-    if (currentEndPosition >= queryEndPosition) {
-      // floorSpan covers the queried region.
-      return true;
-    }
-    for (SimpleCacheSpan next : cachedSpans.tailSet(floorSpan, false)) {
-      if (next.position > currentEndPosition) {
-        // There's a hole in the cache within the queried region.
-        return false;
-      }
-      // We expect currentEndPosition to always equal (next.position + next.length), but
-      // perform a max check anyway to guard against the existence of overlapping spans.
-      currentEndPosition = Math.max(currentEndPosition, next.position + next.length);
-      if (currentEndPosition >= queryEndPosition) {
-        // We've found spans covering the queried region.
-        return true;
+    long currentEndPosition = span.position + span.length;
+    if (currentEndPosition < queryEndPosition) {
+      for (SimpleCacheSpan next : cachedSpans.tailSet(span, false)) {
+        if (next.position > currentEndPosition) {
+          // There's a hole in the cache within the queried region.
+          break;
+        }
+        // We expect currentEndPosition to always equal (next.position + next.length), but
+        // perform a max check anyway to guard against the existence of overlapping spans.
+        currentEndPosition = Math.max(currentEndPosition, next.position + next.length);
+        if (currentEndPosition >= queryEndPosition) {
+          // We've found spans covering the queried region.
+          break;
+        }
       }
     }
-    // We ran out of spans before covering the queried region.
-    return false;
+    return Math.min(currentEndPosition - position, length);
   }
 
   /**
@@ -182,23 +213,41 @@ import java.util.TreeSet;
     return false;
   }
 
-  /** Calculates a hash code for the header of this {@code CachedContent}. */
-  public int headerHashCode() {
+  /**
+   * Calculates a hash code for the header of this {@code CachedContent} which is compatible with
+   * the index file with {@code version}.
+   */
+  public int headerHashCode(int version) {
     int result = id;
     result = 31 * result + key.hashCode();
-    result = 31 * result + (int) (length ^ (length >>> 32));
+    if (version < VERSION_METADATA_INTRODUCED) {
+      long length = ContentMetadataInternal.getContentLength(metadata);
+      result = 31 * result + (int) (length ^ (length >>> 32));
+    } else {
+      result = 31 * result + metadata.hashCode();
+    }
     return result;
   }
 
-  /**
-   * Returns the span containing the position. If there isn't one, it returns the lookup span it
-   * used for searching.
-   */
-  private SimpleCacheSpan getSpanInternal(long position) {
-    SimpleCacheSpan lookupSpan = SimpleCacheSpan.createLookup(key, position);
-    SimpleCacheSpan floorSpan = cachedSpans.floor(lookupSpan);
-    return floorSpan == null || floorSpan.position + floorSpan.length <= position ? lookupSpan
-        : floorSpan;
+  @Override
+  public int hashCode() {
+    int result = headerHashCode(VERSION_MAX);
+    result = 31 * result + cachedSpans.hashCode();
+    return result;
   }
 
+  @Override
+  public boolean equals(@Nullable Object o) {
+    if (this == o) {
+      return true;
+    }
+    if (o == null || getClass() != o.getClass()) {
+      return false;
+    }
+    CachedContent that = (CachedContent) o;
+    return id == that.id
+        && key.equals(that.key)
+        && cachedSpans.equals(that.cachedSpans)
+        && metadata.equals(that.metadata);
+  }
 }

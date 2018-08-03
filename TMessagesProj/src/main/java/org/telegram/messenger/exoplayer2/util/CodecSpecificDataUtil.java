@@ -17,6 +17,7 @@ package org.telegram.messenger.exoplayer2.util;
 
 import android.util.Pair;
 import org.telegram.messenger.exoplayer2.C;
+import org.telegram.messenger.exoplayer2.ParserException;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -75,26 +76,37 @@ public final class CodecSpecificDataUtil {
   private static final int AUDIO_OBJECT_TYPE_ER_BSAC = 22;
   // Parametric Stereo.
   private static final int AUDIO_OBJECT_TYPE_PS = 29;
+  // Escape code for extended audio object types.
+  private static final int AUDIO_OBJECT_TYPE_ESCAPE = 31;
 
   private CodecSpecificDataUtil() {}
 
   /**
    * Parses an AudioSpecificConfig, as defined in ISO 14496-3 1.6.2.1
    *
-   * @param audioSpecificConfig The AudioSpecificConfig to parse.
+   * @param audioSpecificConfig A byte array containing the AudioSpecificConfig to parse.
    * @return A pair consisting of the sample rate in Hz and the channel count.
+   * @throws ParserException If the AudioSpecificConfig cannot be parsed as it's not supported.
    */
-  public static Pair<Integer, Integer> parseAacAudioSpecificConfig(byte[] audioSpecificConfig) {
-    ParsableBitArray bitArray = new ParsableBitArray(audioSpecificConfig);
-    int audioObjectType = bitArray.readBits(5);
-    int frequencyIndex = bitArray.readBits(4);
-    int sampleRate;
-    if (frequencyIndex == AUDIO_SPECIFIC_CONFIG_FREQUENCY_INDEX_ARBITRARY) {
-      sampleRate = bitArray.readBits(24);
-    } else {
-      Assertions.checkArgument(frequencyIndex < 13);
-      sampleRate = AUDIO_SPECIFIC_CONFIG_SAMPLING_RATE_TABLE[frequencyIndex];
-    }
+  public static Pair<Integer, Integer> parseAacAudioSpecificConfig(byte[] audioSpecificConfig)
+      throws ParserException {
+    return parseAacAudioSpecificConfig(new ParsableBitArray(audioSpecificConfig), false);
+  }
+
+  /**
+   * Parses an AudioSpecificConfig, as defined in ISO 14496-3 1.6.2.1
+   *
+   * @param bitArray A {@link ParsableBitArray} containing the AudioSpecificConfig to parse. The
+   *     position is advanced to the end of the AudioSpecificConfig.
+   * @param forceReadToEnd Whether the entire AudioSpecificConfig should be read. Required for
+   *     knowing the length of the configuration payload.
+   * @return A pair consisting of the sample rate in Hz and the channel count.
+   * @throws ParserException If the AudioSpecificConfig cannot be parsed as it's not supported.
+   */
+  public static Pair<Integer, Integer> parseAacAudioSpecificConfig(ParsableBitArray bitArray,
+      boolean forceReadToEnd) throws ParserException {
+    int audioObjectType = getAacAudioObjectType(bitArray);
+    int sampleRate = getAacSamplingFrequency(bitArray);
     int channelConfiguration = bitArray.readBits(4);
     if (audioObjectType == AUDIO_OBJECT_TYPE_SBR || audioObjectType == AUDIO_OBJECT_TYPE_PS) {
       // For an AAC bitstream using spectral band replication (SBR) or parametric stereo (PS) with
@@ -102,19 +114,48 @@ public final class CodecSpecificDataUtil {
       // content; this is identical to the sample rate of the decoded output but may differ from
       // the sample rate set above.
       // Use the extensionSamplingFrequencyIndex.
-      frequencyIndex = bitArray.readBits(4);
-      if (frequencyIndex == AUDIO_SPECIFIC_CONFIG_FREQUENCY_INDEX_ARBITRARY) {
-        sampleRate = bitArray.readBits(24);
-      } else {
-        Assertions.checkArgument(frequencyIndex < 13);
-        sampleRate = AUDIO_SPECIFIC_CONFIG_SAMPLING_RATE_TABLE[frequencyIndex];
-      }
-      audioObjectType = bitArray.readBits(5);
+      sampleRate = getAacSamplingFrequency(bitArray);
+      audioObjectType = getAacAudioObjectType(bitArray);
       if (audioObjectType == AUDIO_OBJECT_TYPE_ER_BSAC) {
         // Use the extensionChannelConfiguration.
         channelConfiguration = bitArray.readBits(4);
       }
     }
+
+    if (forceReadToEnd) {
+      switch (audioObjectType) {
+        case 1:
+        case 2:
+        case 3:
+        case 4:
+        case 6:
+        case 7:
+        case 17:
+        case 19:
+        case 20:
+        case 21:
+        case 22:
+        case 23:
+          parseGaSpecificConfig(bitArray, audioObjectType, channelConfiguration);
+          break;
+        default:
+          throw new ParserException("Unsupported audio object type: " + audioObjectType);
+      }
+      switch (audioObjectType) {
+        case 17:
+        case 19:
+        case 20:
+        case 21:
+        case 22:
+        case 23:
+          int epConfig = bitArray.readBits(2);
+          if (epConfig == 2 || epConfig == 3) {
+            throw new ParserException("Unsupported epConfig: " + epConfig);
+          }
+          break;
+      }
+    }
+    // For supported containers, bits_to_decode() is always 0.
     int channelCount = AUDIO_SPECIFIC_CONFIG_CHANNEL_COUNT_TABLE[channelConfiguration];
     Assertions.checkArgument(channelCount != AUDIO_SPECIFIC_CONFIG_CHANNEL_CONFIGURATION_INVALID);
     return Pair.create(sampleRate, channelCount);
@@ -245,6 +286,67 @@ public final class CodecSpecificDataUtil {
       }
     }
     return true;
+  }
+
+  /**
+   * Returns the AAC audio object type as specified in 14496-3 (2005) Table 1.14.
+   *
+   * @param bitArray The bit array containing the audio specific configuration.
+   * @return The audio object type.
+   */
+  private static int getAacAudioObjectType(ParsableBitArray bitArray) {
+    int audioObjectType = bitArray.readBits(5);
+    if (audioObjectType == AUDIO_OBJECT_TYPE_ESCAPE) {
+      audioObjectType = 32 + bitArray.readBits(6);
+    }
+    return audioObjectType;
+  }
+
+  /**
+   * Returns the AAC sampling frequency (or extension sampling frequency) as specified in 14496-3
+   * (2005) Table 1.13.
+   *
+   * @param bitArray The bit array containing the audio specific configuration.
+   * @return The sampling frequency.
+   */
+  private static int getAacSamplingFrequency(ParsableBitArray bitArray) {
+    int samplingFrequency;
+    int frequencyIndex = bitArray.readBits(4);
+    if (frequencyIndex == AUDIO_SPECIFIC_CONFIG_FREQUENCY_INDEX_ARBITRARY) {
+      samplingFrequency = bitArray.readBits(24);
+    } else {
+      Assertions.checkArgument(frequencyIndex < 13);
+      samplingFrequency = AUDIO_SPECIFIC_CONFIG_SAMPLING_RATE_TABLE[frequencyIndex];
+    }
+    return samplingFrequency;
+  }
+
+  private static void parseGaSpecificConfig(ParsableBitArray bitArray, int audioObjectType,
+      int channelConfiguration) {
+    bitArray.skipBits(1); // frameLengthFlag.
+    boolean dependsOnCoreDecoder = bitArray.readBit();
+    if (dependsOnCoreDecoder) {
+      bitArray.skipBits(14); // coreCoderDelay.
+    }
+    boolean extensionFlag = bitArray.readBit();
+    if (channelConfiguration == 0) {
+      throw new UnsupportedOperationException(); // TODO: Implement programConfigElement();
+    }
+    if (audioObjectType == 6 || audioObjectType == 20) {
+      bitArray.skipBits(3); // layerNr.
+    }
+    if (extensionFlag) {
+      if (audioObjectType == 22) {
+        bitArray.skipBits(16); // numOfSubFrame (5), layer_length(11).
+      }
+      if (audioObjectType == 17 || audioObjectType == 19 || audioObjectType == 20
+          || audioObjectType == 23) {
+        // aacSectionDataResilienceFlag, aacScalefactorDataResilienceFlag,
+        // aacSpectralDataResilienceFlag.
+        bitArray.skipBits(3);
+      }
+      bitArray.skipBits(1); // extensionFlag3.
+    }
   }
 
 }

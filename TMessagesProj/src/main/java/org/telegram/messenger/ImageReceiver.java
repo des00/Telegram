@@ -33,6 +33,47 @@ public class ImageReceiver implements NotificationCenter.NotificationCenterDeleg
         void didSetImage(ImageReceiver imageReceiver, boolean set, boolean thumb);
     }
 
+    public static class BitmapHolder {
+
+        private String key;
+        public Bitmap bitmap;
+
+        public BitmapHolder(Bitmap b, String k) {
+            bitmap = b;
+            key = k;
+            if (key != null) {
+                ImageLoader.getInstance().incrementUseCount(key);
+            }
+        }
+
+        public int getWidth() {
+            return bitmap != null ? bitmap.getWidth() : 0;
+        }
+
+        public int getHeight() {
+            return bitmap != null ? bitmap.getHeight() : 0;
+        }
+
+        public boolean isRecycled() {
+            return bitmap == null || bitmap.isRecycled();
+        }
+
+        public void release() {
+            if (key == null) {
+                bitmap = null;
+                return;
+            }
+            boolean canDelete = ImageLoader.getInstance().decrementUseCount(key);
+            if (!ImageLoader.getInstance().isInCache(key)) {
+                if (canDelete) {
+                    bitmap.recycle();
+                }
+            }
+            key = null;
+            bitmap = null;
+        }
+    }
+
     private class SetImageBackup {
         public TLObject fileLocation;
         public String httpUrl;
@@ -41,16 +82,20 @@ public class ImageReceiver implements NotificationCenter.NotificationCenterDeleg
         public TLRPC.FileLocation thumbLocation;
         public String thumbFilter;
         public int size;
-        public boolean cacheOnly;
+        public int cacheType;
         public String ext;
     }
 
+    private int currentAccount;
     private View parentView;
-    private Integer tag;
-    private Integer thumbTag;
+    private int tag;
+    private int thumbTag;
+    private int param;
     private MessageObject parentMessageObject;
     private boolean canceledLoading;
     private static PorterDuffColorFilter selectedColorFilter = new PorterDuffColorFilter(0xffdddddd, PorterDuff.Mode.MULTIPLY);
+    private static PorterDuffColorFilter selectedGroupColorFilter = new PorterDuffColorFilter(0xffbbbbbb, PorterDuff.Mode.MULTIPLY);
+    private boolean forceLoding;
 
     private SetImageBackup setImageBackup;
 
@@ -63,11 +108,17 @@ public class ImageReceiver implements NotificationCenter.NotificationCenterDeleg
     private String currentExt;
     private TLRPC.FileLocation currentThumbLocation;
     private int currentSize;
-    private boolean currentCacheOnly;
+    private int currentCacheType;
     private Drawable currentImage;
     private Drawable currentThumb;
     private Drawable staticThumb;
     private boolean allowStartAnimation = true;
+    private boolean allowDecodeSingleFrame;
+
+    private boolean crossfadeWithOldImage;
+    private Drawable crossfadeImage;
+    private String crossfadeKey;
+    private BitmapShader crossfadeShader;
 
     private boolean needsQualityThumb;
     private boolean shouldGenerateQualityThumb;
@@ -78,21 +129,23 @@ public class ImageReceiver implements NotificationCenter.NotificationCenterDeleg
     private boolean isVisible = true;
     private boolean isAspectFit;
     private boolean forcePreview;
+    private boolean forceCrossfade;
     private int roundRadius;
     private BitmapShader bitmapShader;
     private BitmapShader bitmapShaderThumb;
-    private static Paint roundPaint;
+    private Paint roundPaint;
     private RectF roundRect = new RectF();
     private RectF bitmapRect = new RectF();
     private Matrix shaderMatrix = new Matrix();
     private float overrideAlpha = 1.0f;
-    private boolean isPressed;
+    private int isPressed;
     private int orientation;
     private boolean centerRotation;
     private ImageReceiverDelegate delegate;
     private float currentAlpha;
     private long lastUpdateAlphaTime;
     private byte crossfadeAlpha = 1;
+    private boolean manualAlphaAnimator;
     private boolean crossfadeWithThumb;
     private ColorFilter colorFilter;
 
@@ -102,37 +155,45 @@ public class ImageReceiver implements NotificationCenter.NotificationCenterDeleg
 
     public ImageReceiver(View view) {
         parentView = view;
-        if (roundPaint == null) {
-            roundPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        }
+        roundPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        currentAccount = UserConfig.selectedAccount;
     }
 
     public void cancelLoadImage() {
+        forceLoding = false;
         ImageLoader.getInstance().cancelLoadingForImageReceiver(this, 0);
         canceledLoading = true;
     }
 
-    public void setImage(TLObject path, String filter, Drawable thumb, String ext, boolean cacheOnly) {
-        setImage(path, null, filter, thumb, null, null, 0, ext, cacheOnly);
+    public void setForceLoading(boolean value) {
+        forceLoding = value;
     }
 
-    public void setImage(TLObject path, String filter, Drawable thumb, int size, String ext, boolean cacheOnly) {
-        setImage(path, null, filter, thumb, null, null, size, ext, cacheOnly);
+    public boolean isForceLoding() {
+        return forceLoding;
+    }
+
+    public void setImage(TLObject path, String filter, Drawable thumb, String ext, int cacheType) {
+        setImage(path, null, filter, thumb, null, null, 0, ext, cacheType);
+    }
+
+    public void setImage(TLObject path, String filter, Drawable thumb, int size, String ext, int cacheType) {
+        setImage(path, null, filter, thumb, null, null, size, ext, cacheType);
     }
 
     public void setImage(String httpUrl, String filter, Drawable thumb, String ext, int size) {
-        setImage(null, httpUrl, filter, thumb, null, null, size, ext, true);
+        setImage(null, httpUrl, filter, thumb, null, null, size, ext, 1);
     }
 
-    public void setImage(TLObject fileLocation, String filter, TLRPC.FileLocation thumbLocation, String thumbFilter, String ext, boolean cacheOnly) {
-        setImage(fileLocation, null, filter, null, thumbLocation, thumbFilter, 0, ext, cacheOnly);
+    public void setImage(TLObject fileLocation, String filter, TLRPC.FileLocation thumbLocation, String thumbFilter, String ext, int cacheType) {
+        setImage(fileLocation, null, filter, null, thumbLocation, thumbFilter, 0, ext, cacheType);
     }
 
-    public void setImage(TLObject fileLocation, String filter, TLRPC.FileLocation thumbLocation, String thumbFilter, int size, String ext, boolean cacheOnly) {
-        setImage(fileLocation, null, filter, null, thumbLocation, thumbFilter, size, ext, cacheOnly);
+    public void setImage(TLObject fileLocation, String filter, TLRPC.FileLocation thumbLocation, String thumbFilter, int size, String ext, int cacheType) {
+        setImage(fileLocation, null, filter, null, thumbLocation, thumbFilter, size, ext, cacheType);
     }
 
-    public void setImage(TLObject fileLocation, String httpUrl, String filter, Drawable thumb, TLRPC.FileLocation thumbLocation, String thumbFilter, int size, String ext, boolean cacheOnly) {
+    public void setImage(TLObject fileLocation, String httpUrl, String filter, Drawable thumb, TLRPC.FileLocation thumbLocation, String thumbFilter, int size, String ext, int cacheType) {
         if (setImageBackup != null) {
             setImageBackup.fileLocation = null;
             setImageBackup.httpUrl = null;
@@ -144,10 +205,12 @@ public class ImageReceiver implements NotificationCenter.NotificationCenterDeleg
                 || (fileLocation != null && !(fileLocation instanceof TLRPC.TL_fileLocation)
                 && !(fileLocation instanceof TLRPC.TL_fileEncryptedLocation)
                 && !(fileLocation instanceof TLRPC.TL_document)
-                && !(fileLocation instanceof TLRPC.TL_webDocument)
-                && !(fileLocation instanceof TLRPC.TL_documentEncrypted))) {
-            recycleBitmap(null, false);
-            recycleBitmap(null, true);
+                && !(fileLocation instanceof WebFile)
+                && !(fileLocation instanceof TLRPC.TL_documentEncrypted)
+                && !(fileLocation instanceof SecureDocument))) {
+            for (int a = 0; a < 3; a++) {
+                recycleBitmap(null, a);
+            }
             currentKey = null;
             currentExt = ext;
             currentThumbKey = null;
@@ -155,7 +218,7 @@ public class ImageReceiver implements NotificationCenter.NotificationCenterDeleg
             currentImageLocation = null;
             currentHttpUrl = null;
             currentFilter = null;
-            currentCacheOnly = false;
+            currentCacheType = 0;
             staticThumb = thumb;
             currentAlpha = 1;
             currentThumbLocation = null;
@@ -163,6 +226,7 @@ public class ImageReceiver implements NotificationCenter.NotificationCenterDeleg
             currentImage = null;
             bitmapShader = null;
             bitmapShaderThumb = null;
+            crossfadeShader = null;
             ImageLoader.getInstance().cancelLoadingForImageReceiver(this, 0);
             if (parentView != null) {
                 if (invalidateAll) {
@@ -177,17 +241,20 @@ public class ImageReceiver implements NotificationCenter.NotificationCenterDeleg
             return;
         }
 
-        if (!(thumbLocation instanceof TLRPC.TL_fileLocation)) {
+        if (!(thumbLocation instanceof TLRPC.TL_fileLocation) && !(thumbLocation instanceof TLRPC.TL_fileEncryptedLocation)) {
             thumbLocation = null;
         }
 
         String key = null;
         if (fileLocation != null) {
-            if (fileLocation instanceof TLRPC.FileLocation) {
+            if (fileLocation instanceof SecureDocument) {
+                SecureDocument document = (SecureDocument) fileLocation;
+                key = document.secureFile.dc_id + "_" + document.secureFile.id;
+            } else if (fileLocation instanceof TLRPC.FileLocation) {
                 TLRPC.FileLocation location = (TLRPC.FileLocation) fileLocation;
                 key = location.volume_id + "_" + location.local_id;
-            } else if (fileLocation instanceof TLRPC.TL_webDocument) {
-                TLRPC.TL_webDocument location = (TLRPC.TL_webDocument) fileLocation;
+            } else if (fileLocation instanceof WebFile) {
+                WebFile location = (WebFile) fileLocation;
                 key = Utilities.MD5(location.url);
             } else {
                 TLRPC.Document location = (TLRPC.Document) fileLocation;
@@ -227,8 +294,35 @@ public class ImageReceiver implements NotificationCenter.NotificationCenterDeleg
             }
         }
 
-        recycleBitmap(key, false);
-        recycleBitmap(thumbKey, true);
+        if (crossfadeWithOldImage) {
+            if (currentImage != null) {
+                recycleBitmap(thumbKey, 1);
+                recycleBitmap(null, 2);
+                crossfadeShader = bitmapShader;
+                crossfadeImage = currentImage;
+                crossfadeKey = currentKey;
+                currentImage = null;
+                currentKey = null;
+            } else if (currentThumb != null) {
+                recycleBitmap(key, 0);
+                recycleBitmap(null, 2);
+                crossfadeShader = bitmapShaderThumb;
+                crossfadeImage = currentThumb;
+                crossfadeKey = currentThumbKey;
+                currentThumb = null;
+                currentThumbKey = null;
+            } else {
+                recycleBitmap(key, 0);
+                recycleBitmap(thumbKey, 1);
+                recycleBitmap(null, 2);
+                crossfadeShader = null;
+            }
+        } else {
+            recycleBitmap(key, 0);
+            recycleBitmap(thumbKey, 1);
+            recycleBitmap(null, 2);
+            crossfadeShader = null;
+        }
 
         currentThumbKey = thumbKey;
         currentKey = key;
@@ -238,7 +332,7 @@ public class ImageReceiver implements NotificationCenter.NotificationCenterDeleg
         currentFilter = filter;
         currentThumbFilter = thumbFilter;
         currentSize = size;
-        currentCacheOnly = cacheOnly;
+        currentCacheType = cacheType;
         currentThumbLocation = thumbLocation;
         staticThumb = thumb;
         bitmapShader = null;
@@ -267,12 +361,12 @@ public class ImageReceiver implements NotificationCenter.NotificationCenterDeleg
         this.delegate = delegate;
     }
 
-    public void setPressed(boolean value) {
+    public void setPressed(int value) {
         isPressed = value;
     }
 
     public boolean getPressed() {
-        return isPressed;
+        return isPressed != 0;
     }
 
     public void setOrientation(int angle, boolean center) {
@@ -313,9 +407,16 @@ public class ImageReceiver implements NotificationCenter.NotificationCenterDeleg
 
     public void setImageBitmap(Drawable bitmap) {
         ImageLoader.getInstance().cancelLoadingForImageReceiver(this, 0);
-        recycleBitmap(null, false);
-        recycleBitmap(null, true);
+        for (int a = 0; a < 3; a++) {
+            recycleBitmap(null, a);
+        }
         staticThumb = bitmap;
+        if (roundRadius != 0 && bitmap instanceof BitmapDrawable) {
+            Bitmap object = ((BitmapDrawable) bitmap).getBitmap();
+            bitmapShaderThumb = new BitmapShader(object, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP);
+        } else {
+            bitmapShaderThumb = null;
+        }
         currentThumbLocation = null;
         currentKey = null;
         currentExt = null;
@@ -326,9 +427,9 @@ public class ImageReceiver implements NotificationCenter.NotificationCenterDeleg
         currentHttpUrl = null;
         currentFilter = null;
         currentSize = 0;
-        currentCacheOnly = false;
+        currentCacheType = 0;
         bitmapShader = null;
-        bitmapShaderThumb = null;
+        crossfadeShader = null;
         if (setImageBackup != null) {
             setImageBackup.fileLocation = null;
             setImageBackup.httpUrl = null;
@@ -349,12 +450,13 @@ public class ImageReceiver implements NotificationCenter.NotificationCenterDeleg
     }
 
     public void clearImage() {
-        recycleBitmap(null, false);
-        recycleBitmap(null, true);
-        if (needsQualityThumb) {
-            NotificationCenter.getInstance().removeObserver(this, NotificationCenter.messageThumbGenerated);
-            ImageLoader.getInstance().cancelLoadingForImageReceiver(this, 0);
+        for (int a = 0; a < 3; a++) {
+            recycleBitmap(null, a);
         }
+        if (needsQualityThumb) {
+            NotificationCenter.getGlobalInstance().removeObserver(this, NotificationCenter.messageThumbGenerated);
+        }
+        ImageLoader.getInstance().cancelLoadingForImageReceiver(this, 0);
     }
 
     public void onDetachedFromWindow() {
@@ -370,16 +472,19 @@ public class ImageReceiver implements NotificationCenter.NotificationCenterDeleg
             setImageBackup.thumbFilter = currentThumbFilter;
             setImageBackup.size = currentSize;
             setImageBackup.ext = currentExt;
-            setImageBackup.cacheOnly = currentCacheOnly;
+            setImageBackup.cacheType = currentCacheType;
         }
-        NotificationCenter.getInstance().removeObserver(this, NotificationCenter.didReplacedPhotoInMemCache);
+        NotificationCenter.getGlobalInstance().removeObserver(this, NotificationCenter.didReplacedPhotoInMemCache);
         clearImage();
     }
 
     public boolean onAttachedToWindow() {
-        NotificationCenter.getInstance().addObserver(this, NotificationCenter.didReplacedPhotoInMemCache);
+        NotificationCenter.getGlobalInstance().addObserver(this, NotificationCenter.didReplacedPhotoInMemCache);
+        if (needsQualityThumb) {
+            NotificationCenter.getGlobalInstance().addObserver(this, NotificationCenter.messageThumbGenerated);
+        }
         if (setImageBackup != null && (setImageBackup.fileLocation != null || setImageBackup.httpUrl != null || setImageBackup.thumbLocation != null || setImageBackup.thumb != null)) {
-            setImage(setImageBackup.fileLocation, setImageBackup.httpUrl, setImageBackup.filter, setImageBackup.thumb, setImageBackup.thumbLocation, setImageBackup.thumbFilter, setImageBackup.size, setImageBackup.ext, setImageBackup.cacheOnly);
+            setImage(setImageBackup.fileLocation, setImageBackup.httpUrl, setImageBackup.filter, setImageBackup.thumb, setImageBackup.thumbLocation, setImageBackup.thumbFilter, setImageBackup.size, setImageBackup.ext, setImageBackup.cacheType);
             return true;
         }
         return false;
@@ -396,17 +501,25 @@ public class ImageReceiver implements NotificationCenter.NotificationCenterDeleg
                 paint = bitmapDrawable.getPaint();
             }
             boolean hasFilter = paint != null && paint.getColorFilter() != null;
-            if (hasFilter && !isPressed) {
+            if (hasFilter && isPressed == 0) {
                 if (shader != null) {
                     roundPaint.setColorFilter(null);
                 } else if (staticThumb != drawable) {
                     bitmapDrawable.setColorFilter(null);
                 }
-            } else if (!hasFilter && isPressed) {
-                if (shader != null) {
-                    roundPaint.setColorFilter(selectedColorFilter);
+            } else if (!hasFilter && isPressed != 0) {
+                if (isPressed == 1) {
+                    if (shader != null) {
+                        roundPaint.setColorFilter(selectedColorFilter);
+                    } else {
+                        bitmapDrawable.setColorFilter(selectedColorFilter);
+                    }
                 } else {
-                    bitmapDrawable.setColorFilter(selectedColorFilter);
+                    if (shader != null) {
+                        roundPaint.setColorFilter(selectedGroupColorFilter);
+                    } else {
+                        bitmapDrawable.setColorFilter(selectedGroupColorFilter);
+                    }
                 }
             }
             if (colorFilter != null) {
@@ -485,7 +598,7 @@ public class ImageReceiver implements NotificationCenter.NotificationCenterDeleg
                             ImageLoader.getInstance().removeImage(currentThumbKey);
                             currentThumbKey = null;
                         }
-                        setImage(currentImageLocation, currentHttpUrl, currentFilter, currentThumb, currentThumbLocation, currentThumbFilter, currentSize, currentExt, currentCacheOnly);
+                        setImage(currentImageLocation, currentHttpUrl, currentFilter, currentThumb, currentThumbLocation, currentThumbFilter, currentSize, currentExt, currentCacheType);
                         FileLog.e(e);
                     }
                     canvas.restore();
@@ -533,7 +646,7 @@ public class ImageReceiver implements NotificationCenter.NotificationCenterDeleg
                                     ImageLoader.getInstance().removeImage(currentThumbKey);
                                     currentThumbKey = null;
                                 }
-                                setImage(currentImageLocation, currentHttpUrl, currentFilter, currentThumb, currentThumbLocation, currentThumbFilter, currentSize, currentExt, currentCacheOnly);
+                                setImage(currentImageLocation, currentHttpUrl, currentFilter, currentThumb, currentThumbLocation, currentThumbFilter, currentSize, currentExt, currentCacheType);
                                 FileLog.e(e);
                             }
                         }
@@ -573,7 +686,7 @@ public class ImageReceiver implements NotificationCenter.NotificationCenterDeleg
                                     ImageLoader.getInstance().removeImage(currentThumbKey);
                                     currentThumbKey = null;
                                 }
-                                setImage(currentImageLocation, currentHttpUrl, currentFilter, currentThumb, currentThumbLocation, currentThumbFilter, currentSize, currentExt, currentCacheOnly);
+                                setImage(currentImageLocation, currentHttpUrl, currentFilter, currentThumb, currentThumbLocation, currentThumbFilter, currentSize, currentExt, currentCacheType);
                                 FileLog.e(e);
                             }
                         }
@@ -596,6 +709,9 @@ public class ImageReceiver implements NotificationCenter.NotificationCenterDeleg
     }
 
     private void checkAlphaAnimation(boolean skip) {
+        if (manualAlphaAnimator) {
+            return;
+        }
         if (currentAlpha != 1) {
             if (!skip) {
                 long currentTime = System.currentTimeMillis();
@@ -606,6 +722,10 @@ public class ImageReceiver implements NotificationCenter.NotificationCenterDeleg
                 currentAlpha += dt / 150.0f;
                 if (currentAlpha > 1) {
                     currentAlpha = 1;
+                    if (crossfadeImage != null) {
+                        recycleBitmap(null, 2);
+                        crossfadeShader = null;
+                    }
                 }
             }
             lastUpdateAlphaTime = System.currentTimeMillis();
@@ -624,8 +744,12 @@ public class ImageReceiver implements NotificationCenter.NotificationCenterDeleg
             Drawable drawable = null;
             boolean animationNotReady = currentImage instanceof AnimatedFileDrawable && !((AnimatedFileDrawable) currentImage).hasBitmap();
             boolean isThumb = false;
+            BitmapShader customShader = null;
             if (!forcePreview && currentImage != null && !animationNotReady) {
                 drawable = currentImage;
+            } else if (crossfadeImage != null) {
+                drawable = crossfadeImage;
+                customShader = crossfadeShader;
             } else if (staticThumb instanceof BitmapDrawable) {
                 drawable = staticThumb;
                 isThumb = true;
@@ -640,8 +764,12 @@ public class ImageReceiver implements NotificationCenter.NotificationCenterDeleg
                     } else {
                         if (crossfadeWithThumb && currentAlpha != 1.0f) {
                             Drawable thumbDrawable = null;
+                            BitmapShader customThumbShader = null;
                             if (drawable == currentImage) {
-                                if (staticThumb != null) {
+                                if (crossfadeImage != null) {
+                                    thumbDrawable = crossfadeImage;
+                                    customThumbShader = crossfadeShader;
+                                } else if (staticThumb != null) {
                                     thumbDrawable = staticThumb;
                                 } else if (currentThumb != null) {
                                     thumbDrawable = currentThumb;
@@ -652,13 +780,13 @@ public class ImageReceiver implements NotificationCenter.NotificationCenterDeleg
                                 }
                             }
                             if (thumbDrawable != null) {
-                                drawDrawable(canvas, thumbDrawable, (int) (overrideAlpha * 255), bitmapShaderThumb);
+                                drawDrawable(canvas, thumbDrawable, (int) (overrideAlpha * 255), customThumbShader != null ? customThumbShader : bitmapShaderThumb);
                             }
                         }
-                        drawDrawable(canvas, drawable, (int) (overrideAlpha * currentAlpha * 255), isThumb ? bitmapShaderThumb : bitmapShader);
+                        drawDrawable(canvas, drawable, (int) (overrideAlpha * currentAlpha * 255), customShader != null ? customShader : (isThumb ? bitmapShaderThumb : bitmapShader));
                     }
                 } else {
-                    drawDrawable(canvas, drawable, (int) (overrideAlpha * 255), isThumb ? bitmapShaderThumb : bitmapShader);
+                    drawDrawable(canvas, drawable, (int) (overrideAlpha * 255), customShader != null ? customShader : (isThumb ? bitmapShaderThumb : bitmapShader));
                 }
 
                 checkAlphaAnimation(animationNotReady && crossfadeWithThumb);
@@ -676,6 +804,18 @@ public class ImageReceiver implements NotificationCenter.NotificationCenterDeleg
         return false;
     }
 
+    public void setManualAlphaAnimator(boolean value) {
+        manualAlphaAnimator = value;
+    }
+
+    public float getCurrentAlpha() {
+        return currentAlpha;
+    }
+
+    public void setCurrentAlpha(float value) {
+        currentAlpha = value;
+    }
+
     public Bitmap getBitmap() {
         if (currentImage instanceof AnimatedFileDrawable) {
             return ((AnimatedFileDrawable) currentImage).getAnimatedBitmap();
@@ -691,6 +831,52 @@ public class ImageReceiver implements NotificationCenter.NotificationCenterDeleg
         return null;
     }
 
+    public BitmapHolder getBitmapSafe() {
+        Bitmap bitmap = null;
+        String key = null;
+        if (currentImage instanceof AnimatedFileDrawable) {
+            bitmap = ((AnimatedFileDrawable) currentImage).getAnimatedBitmap();
+        } else if (staticThumb instanceof AnimatedFileDrawable) {
+            bitmap = ((AnimatedFileDrawable) staticThumb).getAnimatedBitmap();
+        } else if (currentImage instanceof BitmapDrawable) {
+            bitmap = ((BitmapDrawable) currentImage).getBitmap();
+            key = currentKey;
+        } else if (currentThumb instanceof BitmapDrawable) {
+            bitmap = ((BitmapDrawable) currentThumb).getBitmap();
+            key = currentThumbKey;
+        } else if (staticThumb instanceof BitmapDrawable) {
+            bitmap = ((BitmapDrawable) staticThumb).getBitmap();
+        }
+        if (bitmap != null) {
+            return new BitmapHolder(bitmap, key);
+        }
+        return null;
+    }
+
+    public Bitmap getThumbBitmap() {
+        if (currentThumb instanceof BitmapDrawable) {
+            return ((BitmapDrawable) currentThumb).getBitmap();
+        } else if (staticThumb instanceof BitmapDrawable) {
+            return ((BitmapDrawable) staticThumb).getBitmap();
+        }
+        return null;
+    }
+
+    public BitmapHolder getThumbBitmapSafe() {
+        Bitmap bitmap = null;
+        String key = null;
+        if (currentThumb instanceof BitmapDrawable) {
+            bitmap = ((BitmapDrawable) currentThumb).getBitmap();
+            key = currentThumbKey;
+        } else if (staticThumb instanceof BitmapDrawable) {
+            bitmap = ((BitmapDrawable) staticThumb).getBitmap();
+        }
+        if (bitmap != null) {
+            return new BitmapHolder(bitmap, key);
+        }
+        return null;
+    }
+
     public int getBitmapWidth() {
         if (currentImage instanceof AnimatedFileDrawable) {
             return orientation % 360 == 0 || orientation % 360 == 180 ? currentImage.getIntrinsicWidth() : currentImage.getIntrinsicHeight();
@@ -698,6 +884,12 @@ public class ImageReceiver implements NotificationCenter.NotificationCenterDeleg
             return orientation % 360 == 0 || orientation % 360 == 180 ? staticThumb.getIntrinsicWidth() : staticThumb.getIntrinsicHeight();
         }
         Bitmap bitmap = getBitmap();
+        if (bitmap == null) {
+            if (staticThumb != null) {
+                return staticThumb.getIntrinsicWidth();
+            }
+            return 1;
+        }
         return orientation % 360 == 0 || orientation % 360 == 180 ? bitmap.getWidth() : bitmap.getHeight();
     }
 
@@ -708,6 +900,12 @@ public class ImageReceiver implements NotificationCenter.NotificationCenterDeleg
             return orientation % 360 == 0 || orientation % 360 == 180 ? staticThumb.getIntrinsicHeight() : staticThumb.getIntrinsicWidth();
         }
         Bitmap bitmap = getBitmap();
+        if (bitmap == null) {
+            if (staticThumb != null) {
+                return staticThumb.getIntrinsicHeight();
+            }
+            return 1;
+        }
         return orientation % 360 == 0 || orientation % 360 == 180 ? bitmap.getHeight() : bitmap.getWidth();
     }
 
@@ -745,6 +943,10 @@ public class ImageReceiver implements NotificationCenter.NotificationCenterDeleg
         return currentImage != null || currentThumb != null || staticThumb != null;
     }
 
+    public boolean hasNotThumb() {
+        return currentImage != null;
+    }
+
     public void setAspectFit(boolean value) {
         isAspectFit = value;
     }
@@ -757,8 +959,16 @@ public class ImageReceiver implements NotificationCenter.NotificationCenterDeleg
         }
     }
 
+    public void setImageX(int x) {
+        imageX = x;
+    }
+
     public void setImageY(int y) {
         imageY = y;
+    }
+
+    public void setImageWidth(int width) {
+        imageW = width;
     }
 
     public void setImageCoords(int x, int y, int width, int height) {
@@ -766,6 +976,14 @@ public class ImageReceiver implements NotificationCenter.NotificationCenterDeleg
         imageY = y;
         imageW = width;
         imageH = height;
+    }
+
+    public float getCenterX() {
+        return imageX + imageW / 2.0f;
+    }
+
+    public float getCenterY() {
+        return imageY + imageH / 2.0f;
     }
 
     public int getImageX() {
@@ -836,12 +1054,16 @@ public class ImageReceiver implements NotificationCenter.NotificationCenterDeleg
         return currentHttpUrl;
     }
 
-    public boolean getCacheOnly() {
-        return currentCacheOnly;
+    public int getCacheType() {
+        return currentCacheType;
     }
 
     public void setForcePreview(boolean value) {
         forcePreview = value;
+    }
+
+    public void setForceCrossfade(boolean value) {
+        forceCrossfade = value;
     }
 
     public boolean isForcePreview() {
@@ -850,6 +1072,10 @@ public class ImageReceiver implements NotificationCenter.NotificationCenterDeleg
 
     public void setRoundRadius(int value) {
         roundRadius = value;
+    }
+
+    public void setCurrentAccount(int value) {
+        currentAccount = value;
     }
 
     public int getRoundRadius() {
@@ -867,14 +1093,22 @@ public class ImageReceiver implements NotificationCenter.NotificationCenterDeleg
     public void setNeedsQualityThumb(boolean value) {
         needsQualityThumb = value;
         if (needsQualityThumb) {
-            NotificationCenter.getInstance().addObserver(this, NotificationCenter.messageThumbGenerated);
+            NotificationCenter.getGlobalInstance().addObserver(this, NotificationCenter.messageThumbGenerated);
         } else {
-            NotificationCenter.getInstance().removeObserver(this, NotificationCenter.messageThumbGenerated);
+            NotificationCenter.getGlobalInstance().removeObserver(this, NotificationCenter.messageThumbGenerated);
         }
+    }
+
+    public void setCrossfadeWithOldImage(boolean value) {
+        crossfadeWithOldImage = value;
     }
 
     public boolean isNeedsQualityThumb() {
         return needsQualityThumb;
+    }
+
+    public int getcurrentAccount() {
+        return currentAccount;
     }
 
     public void setShouldGenerateQualityThumb(boolean value) {
@@ -887,6 +1121,10 @@ public class ImageReceiver implements NotificationCenter.NotificationCenterDeleg
 
     public void setAllowStartAnimation(boolean value) {
         allowStartAnimation = value;
+    }
+
+    public void setAllowDecodeSingleFrame(boolean value) {
+        allowDecodeSingleFrame = value;
     }
 
     public boolean isAllowStartAnimation() {
@@ -913,7 +1151,7 @@ public class ImageReceiver implements NotificationCenter.NotificationCenterDeleg
         return currentImage instanceof AnimatedFileDrawable ? (AnimatedFileDrawable) currentImage : null;
     }
 
-    protected Integer getTag(boolean thumb) {
+    protected int getTag(boolean thumb) {
         if (thumb) {
             return thumbTag;
         } else {
@@ -921,12 +1159,20 @@ public class ImageReceiver implements NotificationCenter.NotificationCenterDeleg
         }
     }
 
-    protected void setTag(Integer value, boolean thumb) {
+    protected void setTag(int value, boolean thumb) {
         if (thumb) {
             thumbTag = value;
         } else {
             tag = value;
         }
+    }
+
+    public void setParam(int value) {
+        param = value;
+    }
+
+    public int getParam() {
+        return param;
     }
 
     protected boolean setImageBitmapByKey(BitmapDrawable bitmap, String key, boolean thumb, boolean memCache) {
@@ -952,8 +1198,8 @@ public class ImageReceiver implements NotificationCenter.NotificationCenterDeleg
                 bitmapShader = null;
             }
 
-            if (!memCache && !forcePreview) {
-                if (currentThumb == null && staticThumb == null || currentAlpha == 1.0f) {
+            if (!memCache && !forcePreview || forceCrossfade) {
+                if (currentThumb == null && staticThumb == null || currentAlpha == 1.0f || forceCrossfade) {
                     currentAlpha = 0.0f;
                     lastUpdateAlphaTime = System.currentTimeMillis();
                     crossfadeWithThumb = currentThumb != null || staticThumb != null;
@@ -966,6 +1212,8 @@ public class ImageReceiver implements NotificationCenter.NotificationCenterDeleg
                 fileDrawable.setParentView(parentView);
                 if (allowStartAnimation) {
                     fileDrawable.start();
+                } else {
+                    fileDrawable.setAllowDecodeSingleFrame(allowDecodeSingleFrame);
                 }
             }
 
@@ -984,7 +1232,7 @@ public class ImageReceiver implements NotificationCenter.NotificationCenterDeleg
 
             currentThumb = bitmap;
 
-            if (roundRadius != 0 && currentImage == null && bitmap instanceof BitmapDrawable) {
+            if (roundRadius != 0 && bitmap instanceof BitmapDrawable) {
                 if (bitmap instanceof AnimatedFileDrawable) {
                     ((AnimatedFileDrawable) bitmap).setRoundRadius(roundRadius);
                 } else {
@@ -996,9 +1244,13 @@ public class ImageReceiver implements NotificationCenter.NotificationCenterDeleg
             }
 
             if (!memCache && crossfadeAlpha != 2) {
-                currentAlpha = 0.0f;
-                lastUpdateAlphaTime = System.currentTimeMillis();
-                crossfadeWithThumb = staticThumb != null && currentKey == null;
+                if (parentMessageObject != null && parentMessageObject.isRoundVideo() && parentMessageObject.isSending()) {
+                    currentAlpha = 1.0f;
+                } else {
+                    currentAlpha = 0.0f;
+                    lastUpdateAlphaTime = System.currentTimeMillis();
+                    crossfadeWithThumb = staticThumb != null && currentKey == null;
+                }
             } else {
                 currentAlpha = 1.0f;
             }
@@ -1018,16 +1270,26 @@ public class ImageReceiver implements NotificationCenter.NotificationCenterDeleg
         return true;
     }
 
-    private void recycleBitmap(String newKey, boolean thumb) {
+    private void recycleBitmap(String newKey, int type) {
         String key;
         Drawable image;
-        if (thumb) {
+        if (type == 2) {
+            key = crossfadeKey;
+            image = crossfadeImage;
+        } else if (type == 1) {
             key = currentThumbKey;
             image = currentThumb;
         } else {
             key = currentKey;
             image = currentImage;
         }
+        if (key != null && key.startsWith("-")) {
+            String replacedKey = ImageLoader.getInstance().getReplacedKey(key);
+            if (replacedKey != null) {
+                key = replacedKey;
+            }
+        }
+        String replacedKey = ImageLoader.getInstance().getReplacedKey(key);
         if (key != null && (newKey == null || !newKey.equals(key)) && image != null) {
             if (image instanceof AnimatedFileDrawable) {
                 AnimatedFileDrawable fileDrawable = (AnimatedFileDrawable) image;
@@ -1042,7 +1304,10 @@ public class ImageReceiver implements NotificationCenter.NotificationCenterDeleg
                 }
             }
         }
-        if (thumb) {
+        if (type == 2) {
+            crossfadeKey = null;
+            crossfadeImage = null;
+        } else if (type == 1) {
             currentThumb = null;
             currentThumbKey = null;
         } else {
@@ -1052,7 +1317,7 @@ public class ImageReceiver implements NotificationCenter.NotificationCenterDeleg
     }
 
     @Override
-    public void didReceivedNotification(int id, Object... args) {
+    public void didReceivedNotification(int id, int account, Object... args) {
         if (id == NotificationCenter.messageThumbGenerated) {
             String key = (String) args[1];
             if (currentThumbKey != null && currentThumbKey.equals(key)) {

@@ -177,6 +177,15 @@ public class NumberPicker extends LinearLayout {
         updateInputTextView();
     }
 
+    public void setTextColor(int color) {
+        mInputText.setTextColor(color);
+        mSelectorWheelPaint.setColor(color);
+    }
+
+    public void setSelectorColor(int color) {
+        mSelectionDivider.setColor(color);
+    }
+
     public NumberPicker(Context context) {
         super(context);
         init();
@@ -282,6 +291,15 @@ public class NumberPicker extends LinearLayout {
             }
         }
         return false;
+    }
+
+    public void finishScroll() {
+        if (!mFlingScroller.isFinished() || !mAdjustScroller.isFinished()) {
+            mFlingScroller.forceFinished(true);
+            mAdjustScroller.forceFinished(true);
+            mCurrentScrollOffset = mInitialScrollOffset;
+            invalidate();
+        }
     }
 
     @Override

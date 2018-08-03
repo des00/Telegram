@@ -70,8 +70,8 @@ public class GroupInviteActivity extends BaseFragment implements NotificationCen
     public boolean onFragmentCreate() {
         super.onFragmentCreate();
 
-        NotificationCenter.getInstance().addObserver(this, NotificationCenter.chatInfoDidLoaded);
-        MessagesController.getInstance().loadFullChat(chat_id, classGuid, true);
+        NotificationCenter.getInstance(currentAccount).addObserver(this, NotificationCenter.chatInfoDidLoaded);
+        MessagesController.getInstance(currentAccount).loadFullChat(chat_id, classGuid, true);
         loading = true;
 
         rowCount = 0;
@@ -87,7 +87,7 @@ public class GroupInviteActivity extends BaseFragment implements NotificationCen
 
     @Override
     public void onFragmentDestroy() {
-        NotificationCenter.getInstance().removeObserver(this, NotificationCenter.chatInfoDidLoaded);
+        NotificationCenter.getInstance(currentAccount).removeObserver(this, NotificationCenter.chatInfoDidLoaded);
     }
 
     @Override
@@ -112,6 +112,7 @@ public class GroupInviteActivity extends BaseFragment implements NotificationCen
 
         emptyView = new EmptyTextProgressView(context);
         emptyView.showProgress();
+        frameLayout.addView(emptyView, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT, Gravity.TOP | Gravity.LEFT));
 
         listView = new RecyclerListView(context);
         listView.setLayoutManager(new LinearLayoutManager(context, LinearLayoutManager.VERTICAL, false));
@@ -169,12 +170,12 @@ public class GroupInviteActivity extends BaseFragment implements NotificationCen
     }
 
     @Override
-    public void didReceivedNotification(int id, Object... args) {
+    public void didReceivedNotification(int id, int account, Object... args) {
         if (id == NotificationCenter.chatInfoDidLoaded) {
             TLRPC.ChatFull info = (TLRPC.ChatFull) args[0];
             int guid = (int) args[1];
             if (info.id == chat_id && guid == classGuid) {
-                invite = MessagesController.getInstance().getExportedInvite(chat_id);
+                invite = MessagesController.getInstance(currentAccount).getExportedInvite(chat_id);
                 if (!(invite instanceof TLRPC.TL_chatInviteExported)) {
                     generateLink(false);
                 } else {
@@ -198,16 +199,16 @@ public class GroupInviteActivity extends BaseFragment implements NotificationCen
     private void generateLink(final boolean newRequest) {
         loading = true;
         TLObject request;
-        if (ChatObject.isChannel(chat_id)) {
+        if (ChatObject.isChannel(chat_id, currentAccount)) {
             TLRPC.TL_channels_exportInvite req = new TLRPC.TL_channels_exportInvite();
-            req.channel = MessagesController.getInputChannel(chat_id);
+            req.channel = MessagesController.getInstance(currentAccount).getInputChannel(chat_id);
             request = req;
         } else {
             TLRPC.TL_messages_exportChatInvite req = new TLRPC.TL_messages_exportChatInvite();
             req.chat_id = chat_id;
             request = req;
         }
-        final int reqId = ConnectionsManager.getInstance().sendRequest(request, new RequestDelegate() {
+        final int reqId = ConnectionsManager.getInstance(currentAccount).sendRequest(request, new RequestDelegate() {
             @Override
             public void run(final TLObject response, final TLRPC.TL_error error) {
                 AndroidUtilities.runOnUIThread(new Runnable() {
@@ -232,7 +233,7 @@ public class GroupInviteActivity extends BaseFragment implements NotificationCen
                 });
             }
         });
-        ConnectionsManager.getInstance().bindRequestToGuid(reqId, classGuid);
+        ConnectionsManager.getInstance(currentAccount).bindRequestToGuid(reqId, classGuid);
         if (listAdapter != null) {
             listAdapter.notifyDataSetChanged();
         }
@@ -296,7 +297,7 @@ public class GroupInviteActivity extends BaseFragment implements NotificationCen
                         privacyCell.setText("");
                         privacyCell.setBackgroundDrawable(Theme.getThemedDrawable(mContext, R.drawable.greydivider_bottom, Theme.key_windowBackgroundGrayShadow));
                     } else if (position == linkInfoRow) {
-                        TLRPC.Chat chat = MessagesController.getInstance().getChat(chat_id);
+                        TLRPC.Chat chat = MessagesController.getInstance(currentAccount).getChat(chat_id);
                         if (ChatObject.isChannel(chat) && !chat.megagroup) {
                             privacyCell.setText(LocaleController.getString("ChannelLinkInfo", R.string.ChannelLinkInfo));
                         } else {

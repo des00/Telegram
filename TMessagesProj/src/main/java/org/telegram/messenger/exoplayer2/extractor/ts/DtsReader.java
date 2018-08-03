@@ -26,19 +26,18 @@ import org.telegram.messenger.exoplayer2.util.ParsableByteArray;
 /**
  * Parses a continuous DTS byte stream and extracts individual samples.
  */
-/* package */ final class DtsReader implements ElementaryStreamReader {
+public final class DtsReader implements ElementaryStreamReader {
 
   private static final int STATE_FINDING_SYNC = 0;
   private static final int STATE_READING_HEADER = 1;
   private static final int STATE_READING_SAMPLE = 2;
 
-  private static final int HEADER_SIZE = 15;
-  private static final int SYNC_VALUE = 0x7FFE8001;
-  private static final int SYNC_VALUE_SIZE = 4;
+  private static final int HEADER_SIZE = 18;
 
   private final ParsableByteArray headerScratchBytes;
   private final String language;
 
+  private String formatId;
   private TrackOutput output;
 
   private int state;
@@ -62,10 +61,6 @@ import org.telegram.messenger.exoplayer2.util.ParsableByteArray;
    */
   public DtsReader(String language) {
     headerScratchBytes = new ParsableByteArray(new byte[HEADER_SIZE]);
-    headerScratchBytes.data[0] = (byte) ((SYNC_VALUE >> 24) & 0xFF);
-    headerScratchBytes.data[1] = (byte) ((SYNC_VALUE >> 16) & 0xFF);
-    headerScratchBytes.data[2] = (byte) ((SYNC_VALUE >> 8) & 0xFF);
-    headerScratchBytes.data[3] = (byte) (SYNC_VALUE & 0xFF);
     state = STATE_FINDING_SYNC;
     this.language = language;
   }
@@ -79,7 +74,9 @@ import org.telegram.messenger.exoplayer2.util.ParsableByteArray;
 
   @Override
   public void createTracks(ExtractorOutput extractorOutput, TrackIdGenerator idGenerator) {
-    output = extractorOutput.track(idGenerator.getNextId());
+    idGenerator.generateNewId();
+    formatId = idGenerator.getFormatId();
+    output = extractorOutput.track(idGenerator.getTrackId(), C.TRACK_TYPE_AUDIO);
   }
 
   @Override
@@ -93,7 +90,6 @@ import org.telegram.messenger.exoplayer2.util.ParsableByteArray;
       switch (state) {
         case STATE_FINDING_SYNC:
           if (skipToNextSync(data)) {
-            bytesRead = SYNC_VALUE_SIZE;
             state = STATE_READING_HEADER;
           }
           break;
@@ -151,7 +147,12 @@ import org.telegram.messenger.exoplayer2.util.ParsableByteArray;
     while (pesBuffer.bytesLeft() > 0) {
       syncBytes <<= 8;
       syncBytes |= pesBuffer.readUnsignedByte();
-      if (syncBytes == SYNC_VALUE) {
+      if (DtsUtil.isSyncWord(syncBytes)) {
+        headerScratchBytes.data[0] = (byte) ((syncBytes >> 24) & 0xFF);
+        headerScratchBytes.data[1] = (byte) ((syncBytes >> 16) & 0xFF);
+        headerScratchBytes.data[2] = (byte) ((syncBytes >> 8) & 0xFF);
+        headerScratchBytes.data[3] = (byte) (syncBytes & 0xFF);
+        bytesRead = 4;
         syncBytes = 0;
         return true;
       }
@@ -165,7 +166,7 @@ import org.telegram.messenger.exoplayer2.util.ParsableByteArray;
   private void parseHeader() {
     byte[] frameData = headerScratchBytes.data;
     if (format == null) {
-      format = DtsUtil.parseDtsFormat(frameData, null, language, null);
+      format = DtsUtil.parseDtsFormat(frameData, formatId, language, null);
       output.format(format);
     }
     sampleSize = DtsUtil.getDtsFrameSize(frameData);

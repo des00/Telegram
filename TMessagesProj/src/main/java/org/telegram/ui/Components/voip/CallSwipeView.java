@@ -17,11 +17,11 @@ import android.graphics.Canvas;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.RectF;
-import android.util.AttributeSet;
 import android.view.MotionEvent;
 import android.view.View;
 
 import org.telegram.messenger.AndroidUtilities;
+import org.telegram.messenger.BuildVars;
 import org.telegram.messenger.FileLog;
 
 import java.util.ArrayList;
@@ -37,20 +37,11 @@ public class CallSwipeView extends View {
 	private Listener listener;
 	private Path arrow = new Path();
 	private AnimatorSet arrowAnim;
-	private boolean animatingArrows =false;
+	private boolean animatingArrows = false;
+	private boolean canceled = false;
 
 	public CallSwipeView(Context context) {
 		super(context);
-		init();
-	}
-
-	public CallSwipeView(Context context, AttributeSet attrs) {
-		super(context, attrs);
-		init();
-	}
-
-	public CallSwipeView(Context context, AttributeSet attrs, int defStyleAttr) {
-		super(context, attrs, defStyleAttr);
 		init();
 	}
 
@@ -73,19 +64,22 @@ public class CallSwipeView extends View {
 		arrowAnim = new AnimatorSet();
 		arrowAnim.playTogether(anims);
 		arrowAnim.addListener(new AnimatorListenerAdapter() {
-			private boolean canceled = false;
 			private long startTime;
-			private Runnable restarter=new Runnable(){
+			private Runnable restarter = new Runnable() {
 				@Override
-				public void run(){
-					arrowAnim.start();
+				public void run() {
+					if (arrowAnim != null) {
+						arrowAnim.start();
+					}
 				}
 			};
 
 			@Override
 			public void onAnimationEnd(Animator animation) {
-				if(System.currentTimeMillis()-startTime<animation.getDuration()/4){
-					FileLog.w("Not repeating animation because previous loop was too fast");
+				if (System.currentTimeMillis() - startTime < animation.getDuration() / 4) {
+					if (BuildVars.LOGS_ENABLED) {
+						FileLog.w("Not repeating animation because previous loop was too fast");
+					}
 					return;
 				}
 				if (!canceled && animatingArrows)
@@ -98,10 +92,20 @@ public class CallSwipeView extends View {
 			}
 
 			@Override
-			public void onAnimationStart(Animator animation){
-				startTime=System.currentTimeMillis();
+			public void onAnimationStart(Animator animation) {
+				startTime = System.currentTimeMillis();
 			}
 		});
+	}
+
+	@Override
+	protected void onDetachedFromWindow() {
+		super.onDetachedFromWindow();
+		if (arrowAnim != null) {
+			canceled = true;
+			arrowAnim.cancel();
+			arrowAnim = null;
+		}
 	}
 
 	public void setColor(int color) {
@@ -125,7 +129,7 @@ public class CallSwipeView extends View {
 
 	@Override
 	public boolean onTouchEvent(MotionEvent ev) {
-		if(!isEnabled())
+		if (!isEnabled())
 			return false;
 		if (ev.getAction() == MotionEvent.ACTION_DOWN) {
 			if ((!dragFromRight && ev.getX() < getDraggedViewWidth()) || (dragFromRight && ev.getX() > getWidth() - getDraggedViewWidth())) {
@@ -138,8 +142,8 @@ public class CallSwipeView extends View {
 		} else if (ev.getAction() == MotionEvent.ACTION_MOVE) {
 			viewToDrag.setTranslationX(Math.max(dragFromRight ? -(getWidth() - getDraggedViewWidth()) : 0, Math.min(ev.getX() - dragStartX, dragFromRight ? 0 : (getWidth() - getDraggedViewWidth()))));
 			invalidate();
-		} else if (ev.getAction() == MotionEvent.ACTION_UP || ev.getAction()==MotionEvent.ACTION_CANCEL) {
-			if (Math.abs(viewToDrag.getTranslationX()) >= getWidth() - getDraggedViewWidth() && ev.getAction()==MotionEvent.ACTION_UP) {
+		} else if (ev.getAction() == MotionEvent.ACTION_UP || ev.getAction() == MotionEvent.ACTION_CANCEL) {
+			if (Math.abs(viewToDrag.getTranslationX()) >= getWidth() - getDraggedViewWidth() && ev.getAction() == MotionEvent.ACTION_UP) {
 				listener.onDragComplete();
 			} else {
 				listener.onDragCancel();
@@ -157,13 +161,18 @@ public class CallSwipeView extends View {
 	}
 
 	public void startAnimatingArrows() {
-		if(animatingArrows)
+		if (animatingArrows || arrowAnim == null)
 			return;
 		animatingArrows = true;
-		arrowAnim.start();
+		if (arrowAnim != null) {
+			arrowAnim.start();
+		}
 	}
 
 	public void reset() {
+		if (arrowAnim == null || canceled) {
+			return;
+		}
 		listener.onDragCancel();
 		viewToDrag.animate().translationX(0).setDuration(200).start();
 		invalidate();

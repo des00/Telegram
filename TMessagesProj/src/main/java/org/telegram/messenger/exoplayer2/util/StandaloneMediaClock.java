@@ -15,34 +15,39 @@
  */
 package org.telegram.messenger.exoplayer2.util;
 
-import android.os.SystemClock;
+import org.telegram.messenger.exoplayer2.C;
+import org.telegram.messenger.exoplayer2.PlaybackParameters;
 
 /**
- * A standalone {@link MediaClock}. The clock can be started, stopped and its time can be set and
- * retrieved. When started, this clock is based on {@link SystemClock#elapsedRealtime()}.
+ * A {@link MediaClock} whose position advances with real time based on the playback parameters when
+ * started.
  */
 public final class StandaloneMediaClock implements MediaClock {
 
+  private final Clock clock;
+
   private boolean started;
+  private long baseUs;
+  private long baseElapsedMs;
+  private PlaybackParameters playbackParameters;
 
   /**
-   * The media time when the clock was last set or stopped.
+   * Creates a new standalone media clock using the given {@link Clock} implementation.
+   *
+   * @param clock A {@link Clock}.
    */
-  private long positionUs;
-
-  /**
-   * The difference between {@link SystemClock#elapsedRealtime()} and {@link #positionUs}
-   * when the clock was last set or started.
-   */
-  private long deltaUs;
+  public StandaloneMediaClock(Clock clock) {
+    this.clock = clock;
+    this.playbackParameters = PlaybackParameters.DEFAULT;
+  }
 
   /**
    * Starts the clock. Does nothing if the clock is already started.
    */
   public void start() {
     if (!started) {
+      baseElapsedMs = clock.elapsedRealtime();
       started = true;
-      deltaUs = elapsedRealtimeMinus(positionUs);
     }
   }
 
@@ -51,26 +56,50 @@ public final class StandaloneMediaClock implements MediaClock {
    */
   public void stop() {
     if (started) {
-      positionUs = elapsedRealtimeMinus(deltaUs);
+      resetPosition(getPositionUs());
       started = false;
     }
   }
 
   /**
-   * @param timeUs The position to set in microseconds.
+   * Resets the clock's position.
+   *
+   * @param positionUs The position to set in microseconds.
    */
-  public void setPositionUs(long timeUs) {
-    this.positionUs = timeUs;
-    deltaUs = elapsedRealtimeMinus(timeUs);
+  public void resetPosition(long positionUs) {
+    baseUs = positionUs;
+    if (started) {
+      baseElapsedMs = clock.elapsedRealtime();
+    }
   }
 
   @Override
   public long getPositionUs() {
-    return started ? elapsedRealtimeMinus(deltaUs) : positionUs;
+    long positionUs = baseUs;
+    if (started) {
+      long elapsedSinceBaseMs = clock.elapsedRealtime() - baseElapsedMs;
+      if (playbackParameters.speed == 1f) {
+        positionUs += C.msToUs(elapsedSinceBaseMs);
+      } else {
+        positionUs += playbackParameters.getMediaTimeUsForPlayoutTimeMs(elapsedSinceBaseMs);
+      }
+    }
+    return positionUs;
   }
 
-  private long elapsedRealtimeMinus(long toSubtractUs) {
-    return SystemClock.elapsedRealtime() * 1000 - toSubtractUs;
+  @Override
+  public PlaybackParameters setPlaybackParameters(PlaybackParameters playbackParameters) {
+    // Store the current position as the new base, in case the playback speed has changed.
+    if (started) {
+      resetPosition(getPositionUs());
+    }
+    this.playbackParameters = playbackParameters;
+    return playbackParameters;
+  }
+
+  @Override
+  public PlaybackParameters getPlaybackParameters() {
+    return playbackParameters;
   }
 
 }

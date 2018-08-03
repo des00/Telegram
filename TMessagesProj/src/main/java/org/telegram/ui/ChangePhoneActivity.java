@@ -14,7 +14,6 @@ import android.animation.AnimatorListenerAdapter;
 import android.animation.AnimatorSet;
 import android.animation.ObjectAnimator;
 import android.annotation.SuppressLint;
-import android.app.Activity;
 import android.app.Dialog;
 import android.content.Context;
 import android.content.Intent;
@@ -38,7 +37,6 @@ import android.view.View;
 import android.view.animation.AccelerateDecelerateInterpolator;
 import android.view.inputmethod.EditorInfo;
 import android.widget.AdapterView;
-import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -67,6 +65,7 @@ import org.telegram.ui.ActionBar.BaseFragment;
 import org.telegram.ui.ActionBar.Theme;
 import org.telegram.ui.ActionBar.ThemeDescription;
 import org.telegram.ui.Components.AlertsCreator;
+import org.telegram.ui.Components.EditTextBoldCursor;
 import org.telegram.ui.Components.HintEditText;
 import org.telegram.ui.Components.LayoutHelper;
 import org.telegram.ui.Components.SlideView;
@@ -171,7 +170,6 @@ public class ChangePhoneActivity extends BaseFragment {
         for (int a = 0; a < views.length; a++) {
             views[a].setVisibility(a == 0 ? View.VISIBLE : View.GONE);
             frameLayout.addView(views[a], LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, a == 0 ? LayoutHelper.WRAP_CONTENT : LayoutHelper.MATCH_PARENT, Gravity.TOP | Gravity.LEFT, AndroidUtilities.isTablet() ? 26 : 18, 30, AndroidUtilities.isTablet() ? 26 : 18, 0));
-            //LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.TOP | Gravity.LEFT, 16, 30, 16, 0)
         }
 
         actionBar.setTitle(views[0].getHeaderName());
@@ -323,7 +321,7 @@ public class ChangePhoneActivity extends BaseFragment {
 
     public class PhoneView extends SlideView implements AdapterView.OnItemSelectedListener {
 
-        private EditText codeField;
+        private EditTextBoldCursor codeField;
         private HintEditText phoneField;
         private TextView countryButton;
         private View view;
@@ -394,10 +392,12 @@ public class ChangePhoneActivity extends BaseFragment {
             textView.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 18);
             linearLayout.addView(textView, LayoutHelper.createLinear(LayoutHelper.WRAP_CONTENT, LayoutHelper.WRAP_CONTENT));
 
-            codeField = new EditText(context);
+            codeField = new EditTextBoldCursor(context);
             codeField.setInputType(InputType.TYPE_CLASS_PHONE);
             codeField.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText));
-            AndroidUtilities.clearCursorDrawable(codeField);
+            codeField.setCursorColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText));
+            codeField.setCursorSize(AndroidUtilities.dp(20));
+            codeField.setCursorWidth(1.5f);
             codeField.setBackgroundDrawable(Theme.createEditTextDrawable(context, false));
             codeField.setPadding(AndroidUtilities.dp(10), 0, 0, 0);
             codeField.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 18);
@@ -502,7 +502,9 @@ public class ChangePhoneActivity extends BaseFragment {
             phoneField.setHintTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteHintText));
             phoneField.setBackgroundDrawable(Theme.createEditTextDrawable(context, false));
             phoneField.setPadding(0, 0, 0, 0);
-            AndroidUtilities.clearCursorDrawable(phoneField);
+            phoneField.setCursorColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText));
+            phoneField.setCursorSize(AndroidUtilities.dp(20));
+            phoneField.setCursorWidth(1.5f);
             phoneField.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 18);
             phoneField.setMaxLines(1);
             phoneField.setGravity(Gravity.LEFT | Gravity.CENTER_VERTICAL);
@@ -691,6 +693,11 @@ public class ChangePhoneActivity extends BaseFragment {
         }
 
         @Override
+        public void onCancelPressed() {
+            nextPressed = false;
+        }
+
+        @Override
         public void onNothingSelected(AdapterView<?> adapterView) {
 
         }
@@ -713,9 +720,12 @@ public class ChangePhoneActivity extends BaseFragment {
                     }
                     if (!allowSms) {
                         permissionsItems.add(Manifest.permission.RECEIVE_SMS);
+                        if (Build.VERSION.SDK_INT >= 23) {
+                            permissionsItems.add(Manifest.permission.READ_SMS);
+                        }
                     }
                     if (!permissionsItems.isEmpty()) {
-                        SharedPreferences preferences = ApplicationLoader.applicationContext.getSharedPreferences("mainconfig", Activity.MODE_PRIVATE);
+                        SharedPreferences preferences = MessagesController.getGlobalMainSettings();
                         if (preferences.getBoolean("firstlogin", true) || getParentActivity().shouldShowRequestPermissionRationale(Manifest.permission.READ_PHONE_STATE) || getParentActivity().shouldShowRequestPermissionRationale(Manifest.permission.RECEIVE_SMS)) {
                             preferences.edit().putBoolean("firstlogin", false).commit();
                             AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
@@ -739,9 +749,6 @@ public class ChangePhoneActivity extends BaseFragment {
 
             if (countryState == 1) {
                 AlertsCreator.showSimpleAlert(ChangePhoneActivity.this, LocaleController.getString("ChooseCountry", R.string.ChooseCountry));
-                return;
-            } else if (countryState == 2 && !BuildVars.DEBUG_VERSION) {
-                AlertsCreator.showSimpleAlert(ChangePhoneActivity.this, LocaleController.getString("WrongCountry", R.string.WrongCountry));
                 return;
             }
             if (codeField.length() == 0) {
@@ -780,7 +787,7 @@ public class ChangePhoneActivity extends BaseFragment {
             params.putString("phoneFormated", phone);
             nextPressed = true;
             needShowProgress();
-            ConnectionsManager.getInstance().sendRequest(req, new RequestDelegate() {
+            ConnectionsManager.getInstance(currentAccount).sendRequest(req, new RequestDelegate() {
                 @Override
                 public void run(final TLObject response, final TLRPC.TL_error error) {
                     AndroidUtilities.runOnUIThread(new Runnable() {
@@ -790,7 +797,7 @@ public class ChangePhoneActivity extends BaseFragment {
                             if (error == null) {
                                 fillNextCodeParams(params, (TLRPC.TL_auth_sentCode) response);
                             } else {
-                                AlertsCreator.processError(error, ChangePhoneActivity.this, req, params.getString("phone"));
+                                AlertsCreator.processError(currentAccount, error, ChangePhoneActivity.this, req, params.getString("phone"));
                             }
                             needHideProgress();
                         }
@@ -826,7 +833,7 @@ public class ChangePhoneActivity extends BaseFragment {
         private String phoneHash;
         private String requestPhone;
         private String emailPhone;
-        private EditText codeField;
+        private EditTextBoldCursor codeField;
         private TextView confirmTextView;
         private TextView timeText;
         private TextView problemText;
@@ -881,10 +888,12 @@ public class ChangePhoneActivity extends BaseFragment {
                 addView(confirmTextView, LayoutHelper.createLinear(LayoutHelper.WRAP_CONTENT, LayoutHelper.WRAP_CONTENT, LocaleController.isRTL ? Gravity.RIGHT : Gravity.LEFT));
             }
 
-            codeField = new EditText(context);
+            codeField = new EditTextBoldCursor(context);
             codeField.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText));
             codeField.setHint(LocaleController.getString("Code", R.string.Code));
-            AndroidUtilities.clearCursorDrawable(codeField);
+            codeField.setCursorColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText));
+            codeField.setCursorSize(AndroidUtilities.dp(20));
+            codeField.setCursorWidth(1.5f);
             codeField.setHintTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteHintText));
             codeField.setBackgroundDrawable(Theme.createEditTextDrawable(context, false));
             codeField.setImeOptions(EditorInfo.IME_ACTION_NEXT | EditorInfo.IME_FLAG_NO_EXTRACT_UI);
@@ -994,7 +1003,7 @@ public class ChangePhoneActivity extends BaseFragment {
                     TLRPC.TL_auth_cancelCode req = new TLRPC.TL_auth_cancelCode();
                     req.phone_number = requestPhone;
                     req.phone_code_hash = phoneHash;
-                    ConnectionsManager.getInstance().sendRequest(req, new RequestDelegate() {
+                    ConnectionsManager.getInstance(currentAccount).sendRequest(req, new RequestDelegate() {
                         @Override
                         public void run(TLObject response, TLRPC.TL_error error) {
 
@@ -1018,7 +1027,7 @@ public class ChangePhoneActivity extends BaseFragment {
             final TLRPC.TL_auth_resendCode req = new TLRPC.TL_auth_resendCode();
             req.phone_number = requestPhone;
             req.phone_code_hash = phoneHash;
-            ConnectionsManager.getInstance().sendRequest(req, new RequestDelegate() {
+            ConnectionsManager.getInstance(currentAccount).sendRequest(req, new RequestDelegate() {
                 @Override
                 public void run(final TLObject response, final TLRPC.TL_error error) {
                     AndroidUtilities.runOnUIThread(new Runnable() {
@@ -1028,7 +1037,7 @@ public class ChangePhoneActivity extends BaseFragment {
                             if (error == null) {
                                 fillNextCodeParams(params, (TLRPC.TL_auth_sentCode) response);
                             } else {
-                                AlertsCreator.processError(error, ChangePhoneActivity.this, req);
+                                AlertsCreator.processError(currentAccount, error, ChangePhoneActivity.this, req);
                                 if (error.text.contains("PHONE_CODE_EXPIRED")) {
                                     onBackPressed();
                                     setPage(0, true, null, true);
@@ -1047,6 +1056,11 @@ public class ChangePhoneActivity extends BaseFragment {
         }
 
         @Override
+        public void onCancelPressed() {
+            nextPressed = false;
+        }
+
+        @Override
         public void setParams(Bundle params, boolean restore) {
             if (params == null) {
                 return;
@@ -1055,10 +1069,10 @@ public class ChangePhoneActivity extends BaseFragment {
             waitingForEvent = true;
             if (currentType == 2) {
                 AndroidUtilities.setWaitingForSms(true);
-                NotificationCenter.getInstance().addObserver(this, NotificationCenter.didReceiveSmsCode);
+                NotificationCenter.getGlobalInstance().addObserver(this, NotificationCenter.didReceiveSmsCode);
             } else if (currentType == 3) {
                 AndroidUtilities.setWaitingForCall(true);
-                NotificationCenter.getInstance().addObserver(this, NotificationCenter.didReceiveCall);
+                NotificationCenter.getGlobalInstance().addObserver(this, NotificationCenter.didReceiveCall);
             }
 
             currentParams = params;
@@ -1092,11 +1106,11 @@ public class ChangePhoneActivity extends BaseFragment {
             if (currentType == 1) {
                 str = AndroidUtilities.replaceTags(LocaleController.getString("SentAppCode", R.string.SentAppCode));
             } else if (currentType == 2) {
-                str = AndroidUtilities.replaceTags(LocaleController.formatString("SentSmsCode", R.string.SentSmsCode, number));
+                str = AndroidUtilities.replaceTags(LocaleController.formatString("SentSmsCode", R.string.SentSmsCode, LocaleController.addNbsp(number)));
             } else if (currentType == 3) {
-                str = AndroidUtilities.replaceTags(LocaleController.formatString("SentCallCode", R.string.SentCallCode, number));
+                str = AndroidUtilities.replaceTags(LocaleController.formatString("SentCallCode", R.string.SentCallCode, LocaleController.addNbsp(number)));
             } else if (currentType == 4) {
-                str = AndroidUtilities.replaceTags(LocaleController.formatString("SentCallOnly", R.string.SentCallOnly, number));
+                str = AndroidUtilities.replaceTags(LocaleController.formatString("SentCallOnly", R.string.SentCallOnly, LocaleController.addNbsp(number)));
             }
             confirmTextView.setText(str);
 
@@ -1211,7 +1225,7 @@ public class ChangePhoneActivity extends BaseFragment {
                                 destroyTimer();
                                 if (currentType == 3) {
                                     AndroidUtilities.setWaitingForCall(false);
-                                    NotificationCenter.getInstance().removeObserver(this, NotificationCenter.didReceiveCall);
+                                    NotificationCenter.getGlobalInstance().removeObserver(this, NotificationCenter.didReceiveCall);
                                     waitingForEvent = false;
                                     destroyCodeTimer();
                                     resendCode();
@@ -1222,7 +1236,7 @@ public class ChangePhoneActivity extends BaseFragment {
                                         TLRPC.TL_auth_resendCode req = new TLRPC.TL_auth_resendCode();
                                         req.phone_number = requestPhone;
                                         req.phone_code_hash = phoneHash;
-                                        ConnectionsManager.getInstance().sendRequest(req, new RequestDelegate() {
+                                        ConnectionsManager.getInstance(currentAccount).sendRequest(req, new RequestDelegate() {
                                             @Override
                                             public void run(TLObject response, final TLRPC.TL_error error) {
                                                 if (error != null && error.text != null) {
@@ -1237,7 +1251,7 @@ public class ChangePhoneActivity extends BaseFragment {
                                         }, ConnectionsManager.RequestFlagFailOnServerErrors);
                                     } else if (nextType == 3) {
                                         AndroidUtilities.setWaitingForSms(false);
-                                        NotificationCenter.getInstance().removeObserver(this, NotificationCenter.didReceiveSmsCode);
+                                        NotificationCenter.getGlobalInstance().removeObserver(this, NotificationCenter.didReceiveSmsCode);
                                         waitingForEvent = false;
                                         destroyCodeTimer();
                                         resendCode();
@@ -1271,10 +1285,10 @@ public class ChangePhoneActivity extends BaseFragment {
             nextPressed = true;
             if (currentType == 2) {
                 AndroidUtilities.setWaitingForSms(false);
-                NotificationCenter.getInstance().removeObserver(this, NotificationCenter.didReceiveSmsCode);
+                NotificationCenter.getGlobalInstance().removeObserver(this, NotificationCenter.didReceiveSmsCode);
             } else if (currentType == 3) {
                 AndroidUtilities.setWaitingForCall(false);
-                NotificationCenter.getInstance().removeObserver(this, NotificationCenter.didReceiveCall);
+                NotificationCenter.getGlobalInstance().removeObserver(this, NotificationCenter.didReceiveCall);
             }
             waitingForEvent = false;
             final TLRPC.TL_account_changePhone req = new TLRPC.TL_account_changePhone();
@@ -1283,7 +1297,7 @@ public class ChangePhoneActivity extends BaseFragment {
             req.phone_code_hash = phoneHash;
             destroyTimer();
             needShowProgress();
-            ConnectionsManager.getInstance().sendRequest(req, new RequestDelegate() {
+            ConnectionsManager.getInstance(currentAccount).sendRequest(req, new RequestDelegate() {
                 @Override
                 public void run(final TLObject response, final TLRPC.TL_error error) {
                     AndroidUtilities.runOnUIThread(new Runnable() {
@@ -1295,14 +1309,14 @@ public class ChangePhoneActivity extends BaseFragment {
                                 TLRPC.User user = (TLRPC.User) response;
                                 destroyTimer();
                                 destroyCodeTimer();
-                                UserConfig.setCurrentUser(user);
-                                UserConfig.saveConfig(true);
+                                UserConfig.getInstance(currentAccount).setCurrentUser(user);
+                                UserConfig.getInstance(currentAccount).saveConfig(true);
                                 ArrayList<TLRPC.User> users = new ArrayList<>();
                                 users.add(user);
-                                MessagesStorage.getInstance().putUsersAndChats(users, null, true, true);
-                                MessagesController.getInstance().putUser(user, false);
+                                MessagesStorage.getInstance(currentAccount).putUsersAndChats(users, null, true, true);
+                                MessagesController.getInstance(currentAccount).putUser(user, false);
                                 finishFragment();
-                                NotificationCenter.getInstance().postNotificationName(NotificationCenter.mainUserInfoChanged);
+                                NotificationCenter.getInstance(currentAccount).postNotificationName(NotificationCenter.mainUserInfoChanged);
                             } else {
                                 lastError = error.text;
                                 if (currentType == 3 && (nextType == 4 || nextType == 2) || currentType == 2 && (nextType == 4 || nextType == 3)) {
@@ -1310,14 +1324,14 @@ public class ChangePhoneActivity extends BaseFragment {
                                 }
                                 if (currentType == 2) {
                                     AndroidUtilities.setWaitingForSms(true);
-                                    NotificationCenter.getInstance().addObserver(LoginActivitySmsView.this, NotificationCenter.didReceiveSmsCode);
+                                    NotificationCenter.getGlobalInstance().addObserver(LoginActivitySmsView.this, NotificationCenter.didReceiveSmsCode);
                                 } else if (currentType == 3) {
                                     AndroidUtilities.setWaitingForCall(true);
-                                    NotificationCenter.getInstance().addObserver(LoginActivitySmsView.this, NotificationCenter.didReceiveCall);
+                                    NotificationCenter.getGlobalInstance().addObserver(LoginActivitySmsView.this, NotificationCenter.didReceiveCall);
                                 }
                                 waitingForEvent = true;
                                 if (currentType != 3) {
-                                    AlertsCreator.processError(error, ChangePhoneActivity.this, req);
+                                    AlertsCreator.processError(currentAccount, error, ChangePhoneActivity.this, req);
                                 }
                             }
                         }
@@ -1333,10 +1347,10 @@ public class ChangePhoneActivity extends BaseFragment {
             currentParams = null;
             if (currentType == 2) {
                 AndroidUtilities.setWaitingForSms(false);
-                NotificationCenter.getInstance().removeObserver(this, NotificationCenter.didReceiveSmsCode);
+                NotificationCenter.getGlobalInstance().removeObserver(this, NotificationCenter.didReceiveSmsCode);
             } else if (currentType == 3) {
                 AndroidUtilities.setWaitingForCall(false);
-                NotificationCenter.getInstance().removeObserver(this, NotificationCenter.didReceiveCall);
+                NotificationCenter.getGlobalInstance().removeObserver(this, NotificationCenter.didReceiveCall);
             }
             waitingForEvent = false;
         }
@@ -1346,10 +1360,10 @@ public class ChangePhoneActivity extends BaseFragment {
             super.onDestroyActivity();
             if (currentType == 2) {
                 AndroidUtilities.setWaitingForSms(false);
-                NotificationCenter.getInstance().removeObserver(this, NotificationCenter.didReceiveSmsCode);
+                NotificationCenter.getGlobalInstance().removeObserver(this, NotificationCenter.didReceiveSmsCode);
             } else if (currentType == 3) {
                 AndroidUtilities.setWaitingForCall(false);
-                NotificationCenter.getInstance().removeObserver(this, NotificationCenter.didReceiveCall);
+                NotificationCenter.getGlobalInstance().removeObserver(this, NotificationCenter.didReceiveCall);
             }
             waitingForEvent = false;
             destroyTimer();
@@ -1366,7 +1380,7 @@ public class ChangePhoneActivity extends BaseFragment {
         }
 
         @Override
-        public void didReceivedNotification(int id, final Object... args) {
+        public void didReceivedNotification(int id, int account, Object... args) {
             if (!waitingForEvent || codeField == null) {
                 return;
             }

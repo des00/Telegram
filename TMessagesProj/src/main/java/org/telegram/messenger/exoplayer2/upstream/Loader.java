@@ -20,11 +20,15 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.Message;
 import android.os.SystemClock;
+import android.support.annotation.IntDef;
+import android.support.annotation.Nullable;
 import android.util.Log;
 import org.telegram.messenger.exoplayer2.util.Assertions;
 import org.telegram.messenger.exoplayer2.util.TraceUtil;
 import org.telegram.messenger.exoplayer2.util.Util;
 import java.io.IOException;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
 import java.util.concurrent.ExecutorService;
 
 /**
@@ -33,11 +37,11 @@ import java.util.concurrent.ExecutorService;
 public final class Loader implements LoaderErrorThrower {
 
   /**
-   * Thrown when an unexpected exception is encountered during loading.
+   * Thrown when an unexpected exception or error is encountered during loading.
    */
   public static final class UnexpectedLoaderException extends IOException {
 
-    public UnexpectedLoaderException(Exception cause) {
+    public UnexpectedLoaderException(Throwable cause) {
       super("Unexpected " + cause.getClass().getSimpleName() + ": " + cause.getMessage(), cause);
     }
 
@@ -61,8 +65,8 @@ public final class Loader implements LoaderErrorThrower {
     /**
      * Performs the load, returning on completion or cancellation.
      *
-     * @throws IOException
-     * @throws InterruptedException
+     * @throws IOException If the input could not be loaded.
+     * @throws InterruptedException If the thread was interrupted.
      */
     void load() throws IOException, InterruptedException;
 
@@ -103,32 +107,43 @@ public final class Loader implements LoaderErrorThrower {
 
     /**
      * Called when a load encounters an error.
-     * <p>
-     * Note: There is guaranteed to be a memory barrier between {@link Loadable#load()} exiting and
-     * this callback being called.
+     *
+     * <p>Note: There is guaranteed to be a memory barrier between {@link Loadable#load()} exiting
+     * and this callback being called.
      *
      * @param loadable The loadable whose load has encountered an error.
      * @param elapsedRealtimeMs {@link SystemClock#elapsedRealtime} when the error occurred.
      * @param loadDurationMs The duration of the load up to the point at which the error occurred.
      * @param error The load error.
-     * @return The desired retry action. One of {@link Loader#RETRY},
-     *     {@link Loader#RETRY_RESET_ERROR_COUNT}, {@link Loader#DONT_RETRY} and
-     *     {@link Loader#DONT_RETRY_FATAL}.
+     * @return The desired retry action. One of {@link Loader#RETRY}, {@link
+     *     Loader#RETRY_RESET_ERROR_COUNT}, {@link Loader#DONT_RETRY} and {@link
+     *     Loader#DONT_RETRY_FATAL}.
      */
+    @RetryAction
     int onLoadError(T loadable, long elapsedRealtimeMs, long loadDurationMs, IOException error);
+  }
+
+  /**
+   * A callback to be notified when a {@link Loader} has finished being released.
+   */
+  public interface ReleaseCallback {
+
+    /**
+     * Called when the {@link Loader} has finished being released.
+     */
+    void onLoaderReleased();
 
   }
+
+  /** Actions that can be taken in response to a load error. */
+  @Retention(RetentionPolicy.SOURCE)
+  @IntDef({RETRY, RETRY_RESET_ERROR_COUNT, DONT_RETRY, DONT_RETRY_FATAL})
+  public @interface RetryAction {}
 
   public static final int RETRY = 0;
   public static final int RETRY_RESET_ERROR_COUNT = 1;
   public static final int DONT_RETRY = 2;
   public static final int DONT_RETRY_FATAL = 3;
-
-  private static final int MSG_START = 0;
-  private static final int MSG_CANCEL = 1;
-  private static final int MSG_END_OF_SOURCE = 2;
-  private static final int MSG_IO_EXCEPTION = 3;
-  private static final int MSG_FATAL_ERROR = 4;
 
   private final ExecutorService downloadExecutorService;
 
@@ -144,22 +159,23 @@ public final class Loader implements LoaderErrorThrower {
 
   /**
    * Starts loading a {@link Loadable}.
-   * <p>
-   * The calling thread must be a {@link Looper} thread, which is the thread on which the
-   * {@link Callback} will be called.
+   *
+   * <p>The calling thread must be a {@link Looper} thread, which is the thread on which the {@link
+   * Callback} will be called.
    *
    * @param <T> The type of the loadable.
    * @param loadable The {@link Loadable} to load.
-   * @param callback A callback to called when the load ends.
-   * @param defaultMinRetryCount The minimum number of times the load must be retried before
-   *     {@link #maybeThrowError()} will propagate an error.
+   * @param callback A callback to be called when the load ends.
+   * @param defaultMinRetryCount The minimum number of times the load must be retried before {@link
+   *     #maybeThrowError()} will propagate an error.
    * @throws IllegalStateException If the calling thread does not have an associated {@link Looper}.
    * @return {@link SystemClock#elapsedRealtime} when the load started.
    */
-  public <T extends Loadable> long startLoading(T loadable, Callback<T> callback,
-      int defaultMinRetryCount) {
+  public <T extends Loadable> long startLoading(
+      T loadable, Callback<T> callback, int defaultMinRetryCount) {
     Looper looper = Looper.myLooper();
     Assertions.checkState(looper != null);
+    fatalError = null;
     long startTimeMs = SystemClock.elapsedRealtime();
     new LoadTask<>(looper, loadable, callback, defaultMinRetryCount, startTimeMs).start(0);
     return startTimeMs;
@@ -188,18 +204,18 @@ public final class Loader implements LoaderErrorThrower {
   }
 
   /**
-   * Releases the {@link Loader}, running {@code postLoadAction} on its thread. This method should
-   * be called when the {@link Loader} is no longer required.
+   * Releases the {@link Loader}. This method should be called when the {@link Loader} is no longer
+   * required.
    *
-   * @param postLoadAction A {@link Runnable} to run on the loader's thread when
-   *     {@link Loadable#load()} is no longer running.
+   * @param callback An optional callback to be called on the loading thread once the loader has
+   *     been released.
    */
-  public void release(Runnable postLoadAction) {
+  public void release(@Nullable ReleaseCallback callback) {
     if (currentTask != null) {
       currentTask.cancel(true);
     }
-    if (postLoadAction != null) {
-      downloadExecutorService.submit(postLoadAction);
+    if (callback != null) {
+      downloadExecutorService.execute(new ReleaseTask(callback));
     }
     downloadExecutorService.shutdown();
   }
@@ -227,6 +243,12 @@ public final class Loader implements LoaderErrorThrower {
   private final class LoadTask<T extends Loadable> extends Handler implements Runnable {
 
     private static final String TAG = "LoadTask";
+
+    private static final int MSG_START = 0;
+    private static final int MSG_CANCEL = 1;
+    private static final int MSG_END_OF_SOURCE = 2;
+    private static final int MSG_IO_EXCEPTION = 3;
+    private static final int MSG_FATAL_ERROR = 4;
 
     private final T loadable;
     private final Loader.Callback<T> callback;
@@ -260,7 +282,7 @@ public final class Loader implements LoaderErrorThrower {
       if (delayMillis > 0) {
         sendEmptyMessageDelayed(MSG_START, delayMillis);
       } else {
-        submitToExecutor();
+        execute();
       }
     }
 
@@ -316,6 +338,14 @@ public final class Loader implements LoaderErrorThrower {
         if (!released) {
           obtainMessage(MSG_IO_EXCEPTION, new UnexpectedLoaderException(e)).sendToTarget();
         }
+      } catch (OutOfMemoryError e) {
+        // This can occur if a stream is malformed in a way that causes an extractor to think it
+        // needs to allocate a large amount of memory. We don't want the process to die in this
+        // case, but we do want the playback to fail.
+        Log.e(TAG, "OutOfMemory error loading stream", e);
+        if (!released) {
+          obtainMessage(MSG_IO_EXCEPTION, new UnexpectedLoaderException(e)).sendToTarget();
+        }
       } catch (Error e) {
         // We'd hope that the platform would kill the process if an Error is thrown here, but the
         // executor may catch the error (b/20616433). Throw it here, but also pass and throw it from
@@ -334,7 +364,7 @@ public final class Loader implements LoaderErrorThrower {
         return;
       }
       if (msg.what == MSG_START) {
-        submitToExecutor();
+        execute();
         return;
       }
       if (msg.what == MSG_FATAL_ERROR) {
@@ -352,7 +382,13 @@ public final class Loader implements LoaderErrorThrower {
           callback.onLoadCanceled(loadable, nowMs, durationMs, false);
           break;
         case MSG_END_OF_SOURCE:
-          callback.onLoadCompleted(loadable, nowMs, durationMs);
+          try {
+            callback.onLoadCompleted(loadable, nowMs, durationMs);
+          } catch (RuntimeException e) {
+            // This should never happen, but handle it anyway.
+            Log.e(TAG, "Unexpected exception handling load completed", e);
+            fatalError = new UnexpectedLoaderException(e);
+          }
           break;
         case MSG_IO_EXCEPTION:
           currentError = (IOException) msg.obj;
@@ -364,12 +400,15 @@ public final class Loader implements LoaderErrorThrower {
             start(getRetryDelayMillis());
           }
           break;
+        default:
+          // Never happens.
+          break;
       }
     }
 
-    private void submitToExecutor() {
+    private void execute() {
       currentError = null;
-      downloadExecutorService.submit(currentTask);
+      downloadExecutorService.execute(currentTask);
     }
 
     private void finish() {
@@ -378,6 +417,21 @@ public final class Loader implements LoaderErrorThrower {
 
     private long getRetryDelayMillis() {
       return Math.min((errorCount - 1) * 1000, 5000);
+    }
+
+  }
+
+  private static final class ReleaseTask implements Runnable {
+
+    private final ReleaseCallback callback;
+
+    public ReleaseTask(ReleaseCallback callback) {
+      this.callback = callback;
+    }
+
+    @Override
+    public void run() {
+      callback.onLoaderReleased();
     }
 
   }

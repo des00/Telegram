@@ -12,21 +12,20 @@ import android.annotation.SuppressLint;
 import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Paint;
-import android.graphics.drawable.Drawable;
 import android.net.Uri;
-import android.os.Build;
 import android.text.Layout;
 import android.text.StaticLayout;
 import android.text.TextPaint;
 import android.text.TextUtils;
 import android.view.Gravity;
+import android.view.HapticFeedbackConstants;
 import android.view.MotionEvent;
+import android.view.ViewConfiguration;
 import android.widget.FrameLayout;
 
 import org.telegram.messenger.AndroidUtilities;
 import org.telegram.messenger.ImageReceiver;
 import org.telegram.messenger.LocaleController;
-import org.telegram.messenger.MediaController;
 import org.telegram.messenger.MessageObject;
 import org.telegram.messenger.FileLoader;
 import org.telegram.messenger.FileLog;
@@ -39,7 +38,6 @@ import org.telegram.ui.Components.LetterDrawable;
 import org.telegram.ui.Components.LinkPath;
 import org.telegram.ui.ActionBar.Theme;
 
-import java.io.File;
 import java.util.ArrayList;
 import java.util.Locale;
 
@@ -48,6 +46,60 @@ public class SharedLinkCell extends FrameLayout {
     public interface SharedLinkCellDelegate {
         void needOpenWebView(TLRPC.WebPage webPage);
         boolean canPerformActions();
+        void onLinkLongPress(final String urlFinal);
+    }
+
+    private boolean checkingForLongPress = false;
+    private CheckForLongPress pendingCheckForLongPress = null;
+    private int pressCount = 0;
+    private CheckForTap pendingCheckForTap = null;
+
+    private final class CheckForTap implements Runnable {
+        public void run() {
+            if (pendingCheckForLongPress == null) {
+                pendingCheckForLongPress = new CheckForLongPress();
+            }
+            pendingCheckForLongPress.currentPressCount = ++pressCount;
+            postDelayed(pendingCheckForLongPress, ViewConfiguration.getLongPressTimeout() - ViewConfiguration.getTapTimeout());
+        }
+    }
+
+    class CheckForLongPress implements Runnable {
+        public int currentPressCount;
+
+        public void run() {
+            if (checkingForLongPress && getParent() != null && currentPressCount == pressCount) {
+                checkingForLongPress = false;
+                performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
+                if (pressedLink >= 0) {
+                    delegate.onLinkLongPress(links.get(pressedLink));
+                }
+                MotionEvent event = MotionEvent.obtain(0, 0, MotionEvent.ACTION_CANCEL, 0, 0, 0);
+                onTouchEvent(event);
+                event.recycle();
+            }
+        }
+    }
+
+    protected void startCheckLongPress() {
+        if (checkingForLongPress) {
+            return;
+        }
+        checkingForLongPress = true;
+        if (pendingCheckForTap == null) {
+            pendingCheckForTap = new CheckForTap();
+        }
+        postDelayed(pendingCheckForTap, ViewConfiguration.getTapTimeout());
+    }
+
+    protected void cancelCheckLongPress() {
+        checkingForLongPress = false;
+        if (pendingCheckForLongPress != null) {
+            removeCallbacks(pendingCheckForLongPress);
+        }
+        if (pendingCheckForTap != null) {
+            removeCallbacks(pendingCheckForTap);
+        }
     }
 
     private boolean linkPreviewPressed;
@@ -272,21 +324,8 @@ public class SharedLinkCell extends FrameLayout {
             }
             linkImageView.setImageCoords(x, AndroidUtilities.dp(10), maxPhotoWidth, maxPhotoWidth);
             String fileName = FileLoader.getAttachFileName(currentPhotoObject);
-            boolean photoExist = true;
-            File cacheFile = FileLoader.getPathToAttach(currentPhotoObject, true);
-            if (!cacheFile.exists()) {
-                photoExist = false;
-            }
             String filter = String.format(Locale.US, "%d_%d", maxPhotoWidth, maxPhotoWidth);
-            if (photoExist || MediaController.getInstance().canDownloadMedia(MediaController.AUTODOWNLOAD_MASK_PHOTO) || FileLoader.getInstance().isLoadingFile(fileName)) {
-                linkImageView.setImage(currentPhotoObject.location, filter, currentPhotoObjectThumb != null ? currentPhotoObjectThumb.location : null, String.format(Locale.US, "%d_%d_b", maxPhotoWidth, maxPhotoWidth), 0, null, false);
-            } else {
-                if (currentPhotoObjectThumb != null) {
-                    linkImageView.setImage(null, null, currentPhotoObjectThumb.location, String.format(Locale.US, "%d_%d_b", maxPhotoWidth, maxPhotoWidth), 0, null, false);
-                } else {
-                    linkImageView.setImageBitmap((Drawable) null);
-                }
-            }
+            linkImageView.setImage(currentPhotoObject.location, filter, currentPhotoObjectThumb != null ? currentPhotoObjectThumb.location : null, String.format(Locale.US, "%d_%d_b", maxPhotoWidth, maxPhotoWidth), 0, null, 0);
             drawLinkImageView = true;
         }
 
@@ -368,6 +407,7 @@ public class SharedLinkCell extends FrameLayout {
                                 resetPressedLink();
                                 pressedLink = a;
                                 linkPreviewPressed = true;
+                                startCheckLongPress();
                                 try {
                                     urlPath.setCurrentLayout(layout, 0, 0);
                                     layout.getSelectionPath(0, layout.getText().length(), urlPath);
@@ -378,7 +418,7 @@ public class SharedLinkCell extends FrameLayout {
                             } else if (linkPreviewPressed) {
                                 try {
                                     TLRPC.WebPage webPage = pressedLink == 0 && message.messageOwner.media != null ? message.messageOwner.media.webpage : null;
-                                    if (webPage != null && Build.VERSION.SDK_INT >= 16 && webPage.embed_url != null && webPage.embed_url.length() != 0) {
+                                    if (webPage != null && webPage.embed_url != null && webPage.embed_url.length() != 0) {
                                         delegate.needOpenWebView(webPage);
                                     } else {
                                         Browser.openUrl(getContext(), links.get(pressedLink));
@@ -416,6 +456,7 @@ public class SharedLinkCell extends FrameLayout {
     protected void resetPressedLink() {
         pressedLink = -1;
         linkPreviewPressed = false;
+        cancelCheckLongPress();
         invalidate();
     }
 

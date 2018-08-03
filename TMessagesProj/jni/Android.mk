@@ -4,14 +4,12 @@ LOCAL_MODULE    := avutil
 
 ifeq ($(TARGET_ARCH_ABI),armeabi-v7a)
     LOCAL_SRC_FILES := ./ffmpeg/armv7-a/libavutil.a
-else
-    ifeq ($(TARGET_ARCH_ABI),armeabi)
-	LOCAL_SRC_FILES := ./ffmpeg/armv5te/libavutil.a
-    else
-        ifeq ($(TARGET_ARCH_ABI),x86)
-	    LOCAL_SRC_FILES := ./ffmpeg/i686/libavutil.a
-        endif
-    endif
+else ifeq ($(TARGET_ARCH_ABI),arm64-v8a)
+    LOCAL_SRC_FILES := ./ffmpeg/arm64/libavutil.a
+else ifeq ($(TARGET_ARCH_ABI),x86)
+    LOCAL_SRC_FILES := ./ffmpeg/i686/libavutil.a
+else ifeq ($(TARGET_ARCH_ABI),x86_64)
+    LOCAL_SRC_FILES := ./ffmpeg/x86_64/libavutil.a
 endif
 
 include $(PREBUILT_STATIC_LIBRARY)
@@ -22,129 +20,79 @@ LOCAL_MODULE    := avformat
 
 ifeq ($(TARGET_ARCH_ABI),armeabi-v7a)
     LOCAL_SRC_FILES := ./ffmpeg/armv7-a/libavformat.a
-else
-    ifeq ($(TARGET_ARCH_ABI),armeabi)
-	LOCAL_SRC_FILES := ./ffmpeg/armv5te/libavformat.a
-    else
-        ifeq ($(TARGET_ARCH_ABI),x86)
-	    LOCAL_SRC_FILES := ./ffmpeg/i686/libavformat.a
-        endif
-    endif
+else ifeq ($(TARGET_ARCH_ABI),arm64-v8a)
+    LOCAL_SRC_FILES := ./ffmpeg/arm64/libavformat.a
+else ifeq ($(TARGET_ARCH_ABI),x86)
+    LOCAL_SRC_FILES := ./ffmpeg/i686/libavformat.a
+else ifeq ($(TARGET_ARCH_ABI),x86_64)
+    LOCAL_SRC_FILES := ./ffmpeg/x86_64/libavformat.a
 endif
 
 include $(PREBUILT_STATIC_LIBRARY)
 
 include $(CLEAR_VARS)
 
-LOCAL_MODULE    := avcodec 
+LOCAL_MODULE    := avcodec
 
 ifeq ($(TARGET_ARCH_ABI),armeabi-v7a)
     LOCAL_SRC_FILES := ./ffmpeg/armv7-a/libavcodec.a
-else
-    ifeq ($(TARGET_ARCH_ABI),armeabi)
-	LOCAL_SRC_FILES := ./ffmpeg/armv5te/libavcodec.a
-    else
-        ifeq ($(TARGET_ARCH_ABI),x86)
-	    LOCAL_SRC_FILES := ./ffmpeg/i686/libavcodec.a
-        endif
-    endif
+else ifeq ($(TARGET_ARCH_ABI),arm64-v8a)
+    LOCAL_SRC_FILES := ./ffmpeg/arm64/libavcodec.a
+else ifeq ($(TARGET_ARCH_ABI),x86)
+    LOCAL_SRC_FILES := ./ffmpeg/i686/libavcodec.a
+else ifeq ($(TARGET_ARCH_ABI),x86_64)
+    LOCAL_SRC_FILES := ./ffmpeg/x86_64/libavcodec.a
 endif
 
 include $(PREBUILT_STATIC_LIBRARY)
 
 include $(CLEAR_VARS)
 
-LOCAL_MODULE    := crypto 
+LOCAL_MODULE    := avresample
+
+ifeq ($(TARGET_ARCH_ABI),armeabi-v7a)
+    LOCAL_SRC_FILES := ./ffmpeg/armv7-a/libavresample.a
+else ifeq ($(TARGET_ARCH_ABI),arm64-v8a)
+    LOCAL_SRC_FILES := ./ffmpeg/arm64/libavresample.a
+else ifeq ($(TARGET_ARCH_ABI),x86)
+    LOCAL_SRC_FILES := ./ffmpeg/i686/libavresample.a
+else ifeq ($(TARGET_ARCH_ABI),x86_64)
+    LOCAL_SRC_FILES := ./ffmpeg/x86_64/libavresample.a
+endif
+
+include $(PREBUILT_STATIC_LIBRARY)
+
+include $(CLEAR_VARS)
+
+LOCAL_MODULE    := crypto
 
 ifeq ($(TARGET_ARCH_ABI),armeabi-v7a)
     LOCAL_SRC_FILES := ./boringssl/lib/libcrypto_armeabi-v7a.a
-else
-    ifeq ($(TARGET_ARCH_ABI),armeabi)
-	LOCAL_SRC_FILES := ./boringssl/lib/libcrypto_armeabi.a
-    else
-        ifeq ($(TARGET_ARCH_ABI),x86)
-	    LOCAL_SRC_FILES := ./boringssl/lib/libcrypto_x86.a
-        endif
-    endif
+else ifeq ($(TARGET_ARCH_ABI),arm64-v8a)
+    LOCAL_SRC_FILES := ./boringssl/lib/libcrypto_arm64-v8a.a
+else ifeq ($(TARGET_ARCH_ABI),x86)
+    LOCAL_SRC_FILES := ./boringssl/lib/libcrypto_x86.a
+else ifeq ($(TARGET_ARCH_ABI),x86_64)
+    LOCAL_SRC_FILES := ./boringssl/lib/libcrypto_x86_64.a
 endif
-
-include $(PREBUILT_STATIC_LIBRARY)
-
-include $(CLEAR_VARS)
-
-LOCAL_CPP_EXTENSION := .cc
-LOCAL_ARM_MODE := arm
-LOCAL_MODULE := breakpad
-LOCAL_CPPFLAGS := -Wall -std=c++11 -DANDROID -finline-functions -ffast-math -Os -fno-strict-aliasing
-
-LOCAL_C_INCLUDES := \
-./jni/breakpad/common/android/include \
-./jni/breakpad
-
-LOCAL_SRC_FILES := \
-./breakpad/client/linux/crash_generation/crash_generation_client.cc \
-./breakpad/client/linux/dump_writer_common/ucontext_reader.cc \
-./breakpad/client/linux/dump_writer_common/thread_info.cc \
-./breakpad/client/linux/handler/exception_handler.cc \
-./breakpad/client/linux/handler/minidump_descriptor.cc \
-./breakpad/client/linux/log/log.cc \
-./breakpad/client/linux/microdump_writer/microdump_writer.cc \
-./breakpad/client/linux/minidump_writer/linux_dumper.cc \
-./breakpad/client/linux/minidump_writer/linux_ptrace_dumper.cc \
-./breakpad/client/linux/minidump_writer/minidump_writer.cc \
-./breakpad/client/minidump_file_writer.cc \
-./breakpad/common/android/breakpad_getcontext.S \
-./breakpad/common/convert_UTF.c \
-./breakpad/common/md5.cc \
-./breakpad/common/string_conversion.cc \
-./breakpad/common/linux/elfutils.cc \
-./breakpad/common/linux/file_id.cc \
-./breakpad/common/linux/guid_creator.cc \
-./breakpad/common/linux/linux_libc_support.cc \
-./breakpad/common/linux/memory_mapped_file.cc \
-./breakpad/common/linux/safe_readlink.cc
-
-include $(BUILD_STATIC_LIBRARY)
-
-include $(CLEAR_VARS)
-
-LOCAL_MODULE    := WebRtcAec
-
-LOCAL_SRC_FILES := ./libtgvoip/external/libWebRtcAec_android_$(TARGET_ARCH_ABI).a
 
 include $(PREBUILT_STATIC_LIBRARY)
 
 include $(CLEAR_VARS)
 
 LOCAL_MODULE := voip
-LOCAL_CPPFLAGS := -Wall -std=c++11 -DANDROID -finline-functions -ffast-math -Os -fno-strict-aliasing -O3
-LOCAL_CFLAGS := -O3 -DUSE_KISS_FFT -fexceptions
-
-ifeq ($(TARGET_ARCH_ABI),armeabi-v7a)
-#    LOCAL_CPPFLAGS += -mfloat-abi=softfp -mfpu=neon
-#    LOCAL_CFLAGS += -mfloat-abi=softfp -mfpu=neon -DFLOATING_POINT
-#	LOCAL_ARM_NEON := true
-else
-	LOCAL_CFLAGS += -DFIXED_POINT
-    ifeq ($(TARGET_ARCH_ABI),armeabi)
-#		LOCAL_CPPFLAGS += -mfloat-abi=softfp -mfpu=neon
-#        LOCAL_CFLAGS += -mfloat-abi=softfp -mfpu=neon
-    else
-        ifeq ($(TARGET_ARCH_ABI),x86)
-
-        endif
-    endif
-endif
+LOCAL_CPPFLAGS := -Wall -std=c++11 -DANDROID -finline-functions -ffast-math -Os -fno-strict-aliasing -O3 -frtti -D__STDC_LIMIT_MACROS
+LOCAL_CFLAGS := -O3 -DUSE_KISS_FFT -fexceptions -DWEBRTC_APM_DEBUG_DUMP=0 -DWEBRTC_POSIX -D__STDC_LIMIT_MACROS -DFIXED_POINT
 
 MY_DIR := libtgvoip
 
-LOCAL_C_INCLUDES := jni/opus/include jni/boringssl/include/
+LOCAL_C_INCLUDES := jni/opus/include jni/boringssl/include/ jni/libtgvoip/webrtc_dsp/
 
 LOCAL_SRC_FILES := \
 ./libtgvoip/logging.cpp \
 ./libtgvoip/VoIPController.cpp \
-./libtgvoip/BufferInputStream.cpp \
-./libtgvoip/BufferOutputStream.cpp \
+./libtgvoip/VoIPGroupController.cpp \
+./libtgvoip/Buffers.cpp \
 ./libtgvoip/BlockingQueue.cpp \
 ./libtgvoip/audio/AudioInput.cpp \
 ./libtgvoip/os/android/AudioInputOpenSLES.cpp \
@@ -154,13 +102,115 @@ LOCAL_SRC_FILES := \
 ./libtgvoip/os/android/AudioOutputOpenSLES.cpp \
 ./libtgvoip/JitterBuffer.cpp \
 ./libtgvoip/OpusDecoder.cpp \
-./libtgvoip/BufferPool.cpp \
 ./libtgvoip/os/android/OpenSLEngineWrapper.cpp \
 ./libtgvoip/os/android/AudioInputAndroid.cpp \
 ./libtgvoip/os/android/AudioOutputAndroid.cpp \
 ./libtgvoip/EchoCanceller.cpp \
 ./libtgvoip/CongestionControl.cpp \
-./libtgvoip/VoIPServerConfig.cpp
+./libtgvoip/VoIPServerConfig.cpp \
+./libtgvoip/audio/Resampler.cpp \
+./libtgvoip/NetworkSocket.cpp \
+./libtgvoip/os/posix/NetworkSocketPosix.cpp \
+./libtgvoip/PacketReassembler.cpp \
+./libtgvoip/MessageThread.cpp \
+./libtgvoip/audio/AudioIO.cpp
+
+# WebRTC signal processing
+
+LOCAL_SRC_FILES += \
+./libtgvoip/webrtc_dsp/webrtc/common_audio/ring_buffer.c \
+./libtgvoip/webrtc_dsp/webrtc/common_audio/signal_processing/auto_corr_to_refl_coef.c \
+./libtgvoip/webrtc_dsp/webrtc/common_audio/signal_processing/auto_correlation.c \
+./libtgvoip/webrtc_dsp/webrtc/common_audio/signal_processing/complex_bit_reverse.c \
+./libtgvoip/webrtc_dsp/webrtc/common_audio/signal_processing/complex_fft.c \
+./libtgvoip/webrtc_dsp/webrtc/common_audio/signal_processing/copy_set_operations.c \
+./libtgvoip/webrtc_dsp/webrtc/common_audio/signal_processing/cross_correlation.c \
+./libtgvoip/webrtc_dsp/webrtc/common_audio/signal_processing/division_operations.c \
+./libtgvoip/webrtc_dsp/webrtc/common_audio/signal_processing/dot_product_with_scale.c \
+./libtgvoip/webrtc_dsp/webrtc/common_audio/signal_processing/downsample_fast.c \
+./libtgvoip/webrtc_dsp/webrtc/common_audio/signal_processing/energy.c \
+./libtgvoip/webrtc_dsp/webrtc/common_audio/signal_processing/filter_ar.c \
+./libtgvoip/webrtc_dsp/webrtc/common_audio/signal_processing/filter_ar_fast_q12.c \
+./libtgvoip/webrtc_dsp/webrtc/common_audio/signal_processing/filter_ma_fast_q12.c \
+./libtgvoip/webrtc_dsp/webrtc/common_audio/signal_processing/get_hanning_window.c \
+./libtgvoip/webrtc_dsp/webrtc/common_audio/signal_processing/get_scaling_square.c \
+./libtgvoip/webrtc_dsp/webrtc/common_audio/signal_processing/ilbc_specific_functions.c \
+./libtgvoip/webrtc_dsp/webrtc/common_audio/signal_processing/levinson_durbin.c \
+./libtgvoip/webrtc_dsp/webrtc/common_audio/signal_processing/lpc_to_refl_coef.c \
+./libtgvoip/webrtc_dsp/webrtc/common_audio/signal_processing/min_max_operations.c \
+./libtgvoip/webrtc_dsp/webrtc/common_audio/signal_processing/randomization_functions.c \
+./libtgvoip/webrtc_dsp/webrtc/common_audio/signal_processing/real_fft.c \
+./libtgvoip/webrtc_dsp/webrtc/common_audio/signal_processing/refl_coef_to_lpc.c \
+./libtgvoip/webrtc_dsp/webrtc/common_audio/signal_processing/resample.c \
+./libtgvoip/webrtc_dsp/webrtc/common_audio/signal_processing/resample_48khz.c \
+./libtgvoip/webrtc_dsp/webrtc/common_audio/signal_processing/resample_by_2.c \
+./libtgvoip/webrtc_dsp/webrtc/common_audio/signal_processing/resample_by_2_internal.c \
+./libtgvoip/webrtc_dsp/webrtc/common_audio/signal_processing/resample_fractional.c \
+./libtgvoip/webrtc_dsp/webrtc/common_audio/signal_processing/spl_init.c \
+./libtgvoip/webrtc_dsp/webrtc/common_audio/signal_processing/spl_inl.c \
+./libtgvoip/webrtc_dsp/webrtc/common_audio/signal_processing/spl_sqrt.c \
+./libtgvoip/webrtc_dsp/webrtc/common_audio/signal_processing/spl_sqrt_floor.c \
+./libtgvoip/webrtc_dsp/webrtc/common_audio/signal_processing/splitting_filter_impl.c \
+./libtgvoip/webrtc_dsp/webrtc/common_audio/signal_processing/sqrt_of_one_minus_x_squared.c \
+./libtgvoip/webrtc_dsp/webrtc/common_audio/signal_processing/vector_scaling_operations.c
+
+LOCAL_SRC_FILES += \
+./libtgvoip/webrtc_dsp/webrtc/base/checks.cc \
+./libtgvoip/webrtc_dsp/webrtc/modules/audio_processing/aecm/aecm_core.cc \
+./libtgvoip/webrtc_dsp/webrtc/modules/audio_processing/aecm/aecm_core_c.cc \
+./libtgvoip/webrtc_dsp/webrtc/modules/audio_processing/aecm/echo_control_mobile.cc \
+./libtgvoip/webrtc_dsp/webrtc/modules/audio_processing/utility/delay_estimator.cc \
+./libtgvoip/webrtc_dsp/webrtc/modules/audio_processing/utility/delay_estimator_wrapper.cc \
+./libtgvoip/webrtc_dsp/webrtc/modules/audio_processing/three_band_filter_bank.cc \
+./libtgvoip/webrtc_dsp/webrtc/modules/audio_processing/splitting_filter.cc \
+./libtgvoip/webrtc_dsp/webrtc/system_wrappers/source/cpu_features.cc \
+./libtgvoip/webrtc_dsp/webrtc/common_audio/sparse_fir_filter.cc \
+./libtgvoip/webrtc_dsp/webrtc/common_audio/channel_buffer.cc \
+./libtgvoip/webrtc_dsp/webrtc/common_audio/audio_util.cc
+
+#LOCAL_SRC_FILES += \
+#./libtgvoip/webrtc_dsp/webrtc/modules/audio_processing/utility/block_mean_calculator.cc \
+#./libtgvoip/webrtc_dsp/webrtc/modules/audio_processing/utility/ooura_fft.cc \
+#./libtgvoip/webrtc_dsp/webrtc/modules/audio_processing/logging/apm_data_dumper.cc \
+#./libtgvoip/webrtc_dsp/webrtc/modules/audio_processing/aec/aec_core.cc \
+#./libtgvoip/webrtc_dsp/webrtc/modules/audio_processing/aec/aec_resampler.cc \
+#./libtgvoip/webrtc_dsp/webrtc/modules/audio_processing/aec/echo_cancellation.cc \
+#./libtgvoip/webrtc_dsp/webrtc/common_audio/wav_header.cc \
+#./libtgvoip/webrtc_dsp/webrtc/common_audio/wav_file.cc \
+#./libtgvoip/webrtc_dsp/webrtc/base/stringutils.cc
+
+LOCAL_SRC_FILES += \
+./libtgvoip/webrtc_dsp/webrtc/modules/audio_processing/ns/noise_suppression_x.c \
+./libtgvoip/webrtc_dsp/webrtc/modules/audio_processing/ns/noise_suppression.c \
+./libtgvoip/webrtc_dsp/webrtc/modules/audio_processing/ns/ns_core.c \
+./libtgvoip/webrtc_dsp/webrtc/modules/audio_processing/ns/nsx_core_c.c \
+./libtgvoip/webrtc_dsp/webrtc/modules/audio_processing/ns/nsx_core.c \
+./libtgvoip/webrtc_dsp/webrtc/common_audio/fft4g.c
+
+LOCAL_SRC_FILES += \
+./libtgvoip/webrtc_dsp/webrtc/modules/audio_processing/agc/legacy/analog_agc.c \
+./libtgvoip/webrtc_dsp/webrtc/modules/audio_processing/agc/legacy/digital_agc.c
+
+ifeq ($(TARGET_ARCH_ABI),armeabi-v7a)
+LOCAL_SRC_FILES += \
+./libtgvoip/webrtc_dsp/webrtc/modules/audio_processing/aecm/aecm_core_neon.cc.neon \
+./libtgvoip/webrtc_dsp/webrtc/common_audio/signal_processing/min_max_operations_neon.c.neon \
+./libtgvoip/webrtc_dsp/webrtc/common_audio/signal_processing/downsample_fast_neon.c.neon \
+./libtgvoip/webrtc_dsp/webrtc/common_audio/signal_processing/cross_correlation_neon.c.neon \
+./libtgvoip/webrtc_dsp/webrtc/common_audio/signal_processing/filter_ar_fast_q12_armv7.S.neon
+#LOCAL_SRC_FILES += \
+#./libtgvoip/webrtc_dsp/webrtc/modules/audio_processing/aec/aec_core_neon.cc.neon
+#./libtgvoip/webrtc_dsp/webrtc/modules/audio_processing/utility/ooura_fft_neon.cc.neon
+LOCAL_SRC_FILES += \
+./libtgvoip/webrtc_dsp/webrtc/modules/audio_processing/ns/nsx_core_neon.c.neon
+#LOCAL_ARM_NEON := true
+endif
+
+#ifeq ($(TARGET_ARCH_ABI),x86)
+#LOCAL_SRC_FILES += \
+#./libtgvoip/webrtc_dsp/webrtc/modules/audio_processing/aec/aec_core_sse2.cc \
+#./libtgvoip/webrtc_dsp/webrtc/modules/audio_processing/utility/ooura_fft_sse2.cc
+#endif
 
 include $(BUILD_STATIC_LIBRARY)
 
@@ -190,6 +240,8 @@ LOCAL_SRC_FILES := \
 ./tgnet/Timer.cpp \
 ./tgnet/TLObject.cpp \
 ./tgnet/FileLoadOperation.cpp \
+./tgnet/ProxyCheckInfo.cpp \
+./tgnet/Handshake.cpp \
 ./tgnet/Config.cpp
 
 include $(BUILD_STATIC_LIBRARY)
@@ -278,13 +330,53 @@ LOCAL_SRC_FILES := \
 include $(BUILD_STATIC_LIBRARY)
 
 include $(CLEAR_VARS)
-ifeq ($(TARGET_ARCH_ABI),armeabi)
-	LOCAL_ARM_MODE  := thumb
-else
-	LOCAL_ARM_MODE  := arm
-endif
+
+LOCAL_CPPFLAGS := -frtti
+LOCAL_CFLAGS += '-DVERSION="1.3.1"' -DFLAC__NO_MD5 -DFLAC__INTEGER_ONLY_LIBRARY -DFLAC__NO_ASM
+LOCAL_CFLAGS += -D_REENTRANT -DPIC -DU_COMMON_IMPLEMENTATION -fPIC -DHAVE_SYS_PARAM_H
+LOCAL_CFLAGS += -O3 -funroll-loops -finline-functions
+LOCAL_LDLIBS := -lz -lm
+LOCAL_C_INCLUDES := ./jni/exoplayer/libFLAC/include
+LOCAL_ARM_MODE := arm
+LOCAL_CPP_EXTENSION := .cc
+LOCAL_MODULE := flac
+
+LOCAL_SRC_FILES := \
+./exoplayer/libFLAC/bitmath.c                     \
+./exoplayer/libFLAC/bitreader.c                   \
+./exoplayer/libFLAC/bitwriter.c                   \
+./exoplayer/libFLAC/cpu.c                         \
+./exoplayer/libFLAC/crc.c                         \
+./exoplayer/libFLAC/fixed.c                       \
+./exoplayer/libFLAC/fixed_intrin_sse2.c           \
+./exoplayer/libFLAC/fixed_intrin_ssse3.c          \
+./exoplayer/libFLAC/float.c                       \
+./exoplayer/libFLAC/format.c                      \
+./exoplayer/libFLAC/lpc.c                         \
+./exoplayer/libFLAC/lpc_intrin_avx2.c             \
+./exoplayer/libFLAC/lpc_intrin_sse2.c             \
+./exoplayer/libFLAC/lpc_intrin_sse41.c            \
+./exoplayer/libFLAC/lpc_intrin_sse.c              \
+./exoplayer/libFLAC/md5.c                         \
+./exoplayer/libFLAC/memory.c                      \
+./exoplayer/libFLAC/metadata_iterators.c          \
+./exoplayer/libFLAC/metadata_object.c             \
+./exoplayer/libFLAC/stream_decoder.c              \
+./exoplayer/libFLAC/stream_encoder.c              \
+./exoplayer/libFLAC/stream_encoder_framing.c      \
+./exoplayer/libFLAC/stream_encoder_intrin_avx2.c  \
+./exoplayer/libFLAC/stream_encoder_intrin_sse2.c  \
+./exoplayer/libFLAC/stream_encoder_intrin_ssse3.c \
+./exoplayer/libFLAC/windows_unicode_filenames     \
+./exoplayer/libFLAC/window.c
+
+include $(BUILD_STATIC_LIBRARY)
+
+include $(CLEAR_VARS)
+
+LOCAL_ARM_MODE  := arm
 LOCAL_MODULE := sqlite
-LOCAL_CFLAGS 	:= -w -std=c11 -Os -DNULL=0 -DSOCKLEN_T=socklen_t -DLOCALE_NOT_USED -D_LARGEFILE_SOURCE=1 -D_FILE_OFFSET_BITS=64
+LOCAL_CFLAGS 	:= -w -std=c11 -Os -DNULL=0 -DSOCKLEN_T=socklen_t -DLOCALE_NOT_USED -D_LARGEFILE_SOURCE=1
 LOCAL_CFLAGS 	+= -DANDROID_NDK -DDISABLE_IMPORTGL -fno-strict-aliasing -fprefetch-loop-arrays -DAVOID_TABLES -DANDROID_TILE_BASED_DECODE -DANDROID_ARMV6_IDCT -DHAVE_STRCHRNUL=0
 
 LOCAL_SRC_FILES     := \
@@ -295,13 +387,13 @@ include $(BUILD_STATIC_LIBRARY)
 include $(CLEAR_VARS)
 LOCAL_PRELINK_MODULE := false
 
-LOCAL_MODULE 	:= tmessages.26
-LOCAL_CFLAGS 	:= -w -std=c11 -Os -DNULL=0 -DSOCKLEN_T=socklen_t -DLOCALE_NOT_USED -D_LARGEFILE_SOURCE=1 -D_FILE_OFFSET_BITS=64
+LOCAL_MODULE 	:= tmessages.28
+LOCAL_CFLAGS 	:= -w -std=c11 -Os -DNULL=0 -DSOCKLEN_T=socklen_t -DLOCALE_NOT_USED -D_LARGEFILE_SOURCE=1
 LOCAL_CFLAGS 	+= -Drestrict='' -D__EMX__ -DOPUS_BUILD -DFIXED_POINT -DUSE_ALLOCA -DHAVE_LRINT -DHAVE_LRINTF -fno-math-errno
 LOCAL_CFLAGS 	+= -DANDROID_NDK -DDISABLE_IMPORTGL -fno-strict-aliasing -fprefetch-loop-arrays -DAVOID_TABLES -DANDROID_TILE_BASED_DECODE -DANDROID_ARMV6_IDCT -ffast-math -D__STDC_CONSTANT_MACROS
 LOCAL_CPPFLAGS 	:= -DBSD=1 -ffast-math -Os -funroll-loops -std=c++11
-LOCAL_LDLIBS 	:= -ljnigraphics -llog -lz -latomic -lOpenSLES
-LOCAL_STATIC_LIBRARIES := webp sqlite tgnet breakpad avformat avcodec avutil voip WebRtcAec
+LOCAL_LDLIBS 	:= -ljnigraphics -llog -lz -latomic -lOpenSLES -lEGL -lGLESv2 -landroid
+LOCAL_STATIC_LIBRARIES := webp sqlite tgnet avformat avcodec avresample avutil voip flac
 
 LOCAL_SRC_FILES     := \
 ./opus/src/opus.c \
@@ -328,11 +420,7 @@ ifeq ($(TARGET_ARCH_ABI),armeabi-v7a)
 #    LOCAL_SRC_FILES += ./opus/celt/arm/celt_pitch_xcorr_arm-gnu.S
 
 else
-    ifeq ($(TARGET_ARCH_ABI),armeabi)
-	LOCAL_ARM_MODE  := arm
-
-    else
-        ifeq ($(TARGET_ARCH_ABI),x86)
+	ifeq ($(TARGET_ARCH_ABI),x86)
 	    LOCAL_CFLAGS += -Dx86fix
  	    LOCAL_CPPFLAGS += -Dx86fix
 	    LOCAL_ARM_MODE  := arm
@@ -354,8 +442,6 @@ else
 #		./opus/silk/x86/VAD_sse.c \
 #		./opus/silk/x86/VQ_WMat_sse.c \
 #		./opus/silk/x86/x86_silk_map.c
-
-        endif
     endif
 endif
 
@@ -502,9 +588,11 @@ LOCAL_C_INCLUDES    := \
 ./jni/opus/opusfile \
 ./jni/libyuv/include \
 ./jni/boringssl/include \
-./jni/breakpad/common/android/include \
-./jni/breakpad \
-./jni/ffmpeg/include
+./jni/ffmpeg/include \
+./jni/emoji \
+./jni/exoplayer/include \
+./jni/exoplayer/libFLAC/include \
+./jni/intro
 
 LOCAL_SRC_FILES     += \
 ./libyuv/source/compare_common.cc \
@@ -562,11 +650,21 @@ LOCAL_SRC_FILES     += \
 ./utils.c \
 ./image.c \
 ./video.c \
+./intro/IntroRenderer.c \
 ./gifvideo.cpp \
 ./SqliteWrapper.cpp \
 ./TgNetWrapper.cpp \
 ./NativeLoader.cpp \
-./libtgvoip/client/android/tg_voip_jni.cpp
+./emoji/emoji_suggestions_data.cpp \
+./emoji/emoji_suggestions.cpp \
+./exoplayer/flac_jni.cc \
+./exoplayer/flac_parser.cc \
+./exoplayer/opus_jni.cc \
+./exoplayer/ffmpeg_jni.cc \
+./libtgvoip/client/android/tg_voip_jni.cpp \
+./fast-edge.cpp \
+./genann.c \
+./secureid_ocr.cpp
 
 include $(BUILD_SHARED_LIBRARY)
 

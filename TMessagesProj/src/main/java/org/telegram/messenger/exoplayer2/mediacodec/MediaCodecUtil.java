@@ -20,6 +20,7 @@ import android.annotation.TargetApi;
 import android.media.MediaCodecInfo.CodecCapabilities;
 import android.media.MediaCodecInfo.CodecProfileLevel;
 import android.media.MediaCodecList;
+import android.support.annotation.Nullable;
 import android.text.TextUtils;
 import android.util.Log;
 import android.util.Pair;
@@ -56,8 +57,10 @@ public final class MediaCodecUtil {
   }
 
   private static final String TAG = "MediaCodecUtil";
+  private static final String GOOGLE_RAW_DECODER_NAME = "OMX.google.raw.decoder";
+  private static final String MTK_RAW_DECODER_NAME = "OMX.MTK.AUDIO.DECODER.RAW";
   private static final MediaCodecInfo PASSTHROUGH_DECODER_INFO =
-      MediaCodecInfo.newPassthroughInstance("OMX.google.raw.decoder");
+      MediaCodecInfo.newPassthroughInstance(GOOGLE_RAW_DECODER_NAME);
   private static final Pattern PROFILE_PATTERN = Pattern.compile("^\\D?(\\d+)$");
 
   private static final HashMap<CodecKey, List<MediaCodecInfo>> decoderInfosCache = new HashMap<>();
@@ -81,7 +84,8 @@ public final class MediaCodecUtil {
   /**
    * Optional call to warm the codec cache for a given mime type.
    * <p>
-   * Calling this method may speed up subsequent calls to {@link #getDecoderInfo(String, boolean)}.
+   * Calling this method may speed up subsequent calls to {@link #getDecoderInfo(String, boolean)}
+   * and {@link #getDecoderInfos(String, boolean)}.
    *
    * @param mimeType The mime type.
    * @param secure Whether the decoder is required to support secure decryption. Always pass false
@@ -98,7 +102,7 @@ public final class MediaCodecUtil {
 
   /**
    * Returns information about a decoder suitable for audio passthrough.
-   **
+   *
    * @return A {@link MediaCodecInfo} describing the decoder, or null if no suitable decoder
    *     exists.
    */
@@ -117,7 +121,7 @@ public final class MediaCodecUtil {
    *     exists.
    * @throws DecoderQueryException If there was an error querying the available decoders.
    */
-  public static MediaCodecInfo getDecoderInfo(String mimeType, boolean secure)
+  public static @Nullable MediaCodecInfo getDecoderInfo(String mimeType, boolean secure)
       throws DecoderQueryException {
     List<MediaCodecInfo> decoderInfos = getDecoderInfos(mimeType, secure);
     return decoderInfos.isEmpty() ? null : decoderInfos.get(0);
@@ -137,151 +141,34 @@ public final class MediaCodecUtil {
   public static synchronized List<MediaCodecInfo> getDecoderInfos(String mimeType,
       boolean secure) throws DecoderQueryException {
     CodecKey key = new CodecKey(mimeType, secure);
-    List<MediaCodecInfo> decoderInfos = decoderInfosCache.get(key);
-    if (decoderInfos != null) {
-      return decoderInfos;
+    List<MediaCodecInfo> cachedDecoderInfos = decoderInfosCache.get(key);
+    if (cachedDecoderInfos != null) {
+      return cachedDecoderInfos;
     }
     MediaCodecListCompat mediaCodecList = Util.SDK_INT >= 21
         ? new MediaCodecListCompatV21(secure) : new MediaCodecListCompatV16();
-    decoderInfos = getDecoderInfosInternal(key, mediaCodecList);
+    ArrayList<MediaCodecInfo> decoderInfos = getDecoderInfosInternal(key, mediaCodecList, mimeType);
     if (secure && decoderInfos.isEmpty() && 21 <= Util.SDK_INT && Util.SDK_INT <= 23) {
       // Some devices don't list secure decoders on API level 21 [Internal: b/18678462]. Try the
       // legacy path. We also try this path on API levels 22 and 23 as a defensive measure.
       mediaCodecList = new MediaCodecListCompatV16();
-      decoderInfos = getDecoderInfosInternal(key, mediaCodecList);
+      decoderInfos = getDecoderInfosInternal(key, mediaCodecList, mimeType);
       if (!decoderInfos.isEmpty()) {
         Log.w(TAG, "MediaCodecList API didn't list secure decoder for: " + mimeType
             + ". Assuming: " + decoderInfos.get(0).name);
       }
     }
-    decoderInfos = Collections.unmodifiableList(decoderInfos);
-    decoderInfosCache.put(key, decoderInfos);
-    return decoderInfos;
-  }
-
-  private static List<MediaCodecInfo> getDecoderInfosInternal(
-      CodecKey key, MediaCodecListCompat mediaCodecList) throws DecoderQueryException {
-    try {
-      List<MediaCodecInfo> decoderInfos = new ArrayList<>();
-      String mimeType = key.mimeType;
-      int numberOfCodecs = mediaCodecList.getCodecCount();
-      boolean secureDecodersExplicit = mediaCodecList.secureDecodersExplicit();
-      // Note: MediaCodecList is sorted by the framework such that the best decoders come first.
-      for (int i = 0; i < numberOfCodecs; i++) {
-        android.media.MediaCodecInfo codecInfo = mediaCodecList.getCodecInfoAt(i);
-        String codecName = codecInfo.getName();
-        if (isCodecUsableDecoder(codecInfo, codecName, secureDecodersExplicit)) {
-          for (String supportedType : codecInfo.getSupportedTypes()) {
-            if (supportedType.equalsIgnoreCase(mimeType)) {
-              try {
-                CodecCapabilities capabilities = codecInfo.getCapabilitiesForType(supportedType);
-                boolean secure = mediaCodecList.isSecurePlaybackSupported(mimeType, capabilities);
-                if ((secureDecodersExplicit && key.secure == secure)
-                    || (!secureDecodersExplicit && !key.secure)) {
-                  decoderInfos.add(
-                      MediaCodecInfo.newInstance(codecName, mimeType, capabilities));
-                } else if (!secureDecodersExplicit && secure) {
-                  decoderInfos.add(MediaCodecInfo.newInstance(codecName + ".secure",
-                      mimeType, capabilities));
-                  // It only makes sense to have one synthesized secure decoder, return immediately.
-                  return decoderInfos;
-                }
-              } catch (Exception e) {
-                if (Util.SDK_INT <= 23 && !decoderInfos.isEmpty()) {
-                  // Suppress error querying secondary codec capabilities up to API level 23.
-                  Log.e(TAG, "Skipping codec " + codecName + " (failed to query capabilities)");
-                } else {
-                  // Rethrow error querying primary codec capabilities, or secondary codec
-                  // capabilities if API level is greater than 23.
-                  Log.e(TAG, "Failed to query codec " + codecName + " (" + supportedType + ")");
-                  throw e;
-                }
-              }
-            }
-          }
-        }
-      }
-      return decoderInfos;
-    } catch (Exception e) {
-      // If the underlying mediaserver is in a bad state, we may catch an IllegalStateException
-      // or an IllegalArgumentException here.
-      throw new DecoderQueryException(e);
+    if (MimeTypes.AUDIO_E_AC3_JOC.equals(mimeType)) {
+      // E-AC3 decoders can decode JOC streams, but in 2-D rather than 3-D.
+      CodecKey eac3Key = new CodecKey(MimeTypes.AUDIO_E_AC3, key.secure);
+      ArrayList<MediaCodecInfo> eac3DecoderInfos =
+          getDecoderInfosInternal(eac3Key, mediaCodecList, mimeType);
+      decoderInfos.addAll(eac3DecoderInfos);
     }
-  }
-
-  /**
-   * Returns whether the specified codec is usable for decoding on the current device.
-   */
-  private static boolean isCodecUsableDecoder(android.media.MediaCodecInfo info, String name,
-      boolean secureDecodersExplicit) {
-    if (info.isEncoder() || (!secureDecodersExplicit && name.endsWith(".secure"))) {
-      return false;
-    }
-
-    // Work around broken audio decoders.
-    if (Util.SDK_INT < 21
-        && ("CIPAACDecoder".equals(name)
-            || "CIPMP3Decoder".equals(name)
-            || "CIPVorbisDecoder".equals(name)
-            || "CIPAMRNBDecoder".equals(name)
-            || "AACDecoder".equals(name)
-            || "MP3Decoder".equals(name))) {
-      return false;
-    }
-    // Work around https://github.com/google/ExoPlayer/issues/398
-    if (Util.SDK_INT < 18 && "OMX.SEC.MP3.Decoder".equals(name)) {
-      return false;
-    }
-    // Work around https://github.com/google/ExoPlayer/issues/1528
-    if (Util.SDK_INT < 18 && "OMX.MTK.AUDIO.DECODER.AAC".equals(name)
-        && "a70".equals(Util.DEVICE)) {
-      return false;
-    }
-
-    // Work around an issue where querying/creating a particular MP3 decoder on some devices on
-    // platform API version 16 fails.
-    if (Util.SDK_INT == 16
-        && "OMX.qcom.audio.decoder.mp3".equals(name)
-        && ("dlxu".equals(Util.DEVICE) // HTC Butterfly
-            || "protou".equals(Util.DEVICE) // HTC Desire X
-            || "ville".equals(Util.DEVICE) // HTC One S
-            || "villeplus".equals(Util.DEVICE)
-            || "villec2".equals(Util.DEVICE)
-            || Util.DEVICE.startsWith("gee") // LGE Optimus G
-            || "C6602".equals(Util.DEVICE) // Sony Xperia Z
-            || "C6603".equals(Util.DEVICE)
-            || "C6606".equals(Util.DEVICE)
-            || "C6616".equals(Util.DEVICE)
-            || "L36h".equals(Util.DEVICE)
-            || "SO-02E".equals(Util.DEVICE))) {
-      return false;
-    }
-
-    // Work around an issue where large timestamps are not propagated correctly.
-    if (Util.SDK_INT == 16
-        && "OMX.qcom.audio.decoder.aac".equals(name)
-        && ("C1504".equals(Util.DEVICE) // Sony Xperia E
-            || "C1505".equals(Util.DEVICE)
-            || "C1604".equals(Util.DEVICE) // Sony Xperia E dual
-            || "C1605".equals(Util.DEVICE))) {
-      return false;
-    }
-
-    // Work around https://github.com/google/ExoPlayer/issues/548
-    // VP8 decoder on Samsung Galaxy S3/S4/S4 Mini/Tab 3 does not render video.
-    if (Util.SDK_INT <= 19
-        && (Util.DEVICE.startsWith("d2") || Util.DEVICE.startsWith("serrano")
-        || Util.DEVICE.startsWith("jflte") || Util.DEVICE.startsWith("santos"))
-        && "samsung".equals(Util.MANUFACTURER) && "OMX.SEC.vp8.dec".equals(name)) {
-      return false;
-    }
-    // VP8 decoder on Samsung Galaxy S4 cannot be queried.
-    if (Util.SDK_INT <= 19 && Util.DEVICE.startsWith("jflte")
-        && "OMX.qcom.video.decoder.vp8".equals(name)) {
-      return false;
-    }
-
-    return true;
+    applyWorkarounds(decoderInfos);
+    List<MediaCodecInfo> unmodifiableDecoderInfos = Collections.unmodifiableList(decoderInfos);
+    decoderInfosCache.put(key, unmodifiableDecoderInfos);
+    return unmodifiableDecoderInfos;
   }
 
   /**
@@ -329,6 +216,213 @@ public final class MediaCodecUtil {
       default:
         return null;
     }
+  }
+
+  // Internal methods.
+
+  /**
+   * Returns {@link MediaCodecInfo}s for the given codec {@code key} in the order given by
+   * {@code mediaCodecList}.
+   *
+   * @param key The codec key.
+   * @param mediaCodecList The codec list.
+   * @param requestedMimeType The originally requested MIME type, which may differ from the codec
+   *     key MIME type if the codec key is being considered as a fallback.
+   * @return The codec information for usable codecs matching the specified key.
+   * @throws DecoderQueryException If there was an error querying the available decoders.
+   */
+  private static ArrayList<MediaCodecInfo> getDecoderInfosInternal(CodecKey key,
+      MediaCodecListCompat mediaCodecList, String requestedMimeType) throws DecoderQueryException {
+    try {
+      ArrayList<MediaCodecInfo> decoderInfos = new ArrayList<>();
+      String mimeType = key.mimeType;
+      int numberOfCodecs = mediaCodecList.getCodecCount();
+      boolean secureDecodersExplicit = mediaCodecList.secureDecodersExplicit();
+      // Note: MediaCodecList is sorted by the framework such that the best decoders come first.
+      for (int i = 0; i < numberOfCodecs; i++) {
+        android.media.MediaCodecInfo codecInfo = mediaCodecList.getCodecInfoAt(i);
+        String codecName = codecInfo.getName();
+        if (isCodecUsableDecoder(codecInfo, codecName, secureDecodersExplicit, requestedMimeType)) {
+          for (String supportedType : codecInfo.getSupportedTypes()) {
+            if (supportedType.equalsIgnoreCase(mimeType)) {
+              try {
+                CodecCapabilities capabilities = codecInfo.getCapabilitiesForType(supportedType);
+                boolean secure = mediaCodecList.isSecurePlaybackSupported(mimeType, capabilities);
+                boolean forceDisableAdaptive = codecNeedsDisableAdaptationWorkaround(codecName);
+                if ((secureDecodersExplicit && key.secure == secure)
+                    || (!secureDecodersExplicit && !key.secure)) {
+                  decoderInfos.add(MediaCodecInfo.newInstance(codecName, mimeType, capabilities,
+                      forceDisableAdaptive, false));
+                } else if (!secureDecodersExplicit && secure) {
+                  decoderInfos.add(MediaCodecInfo.newInstance(codecName + ".secure", mimeType,
+                      capabilities, forceDisableAdaptive, true));
+                  // It only makes sense to have one synthesized secure decoder, return immediately.
+                  return decoderInfos;
+                }
+              } catch (Exception e) {
+                if (Util.SDK_INT <= 23 && !decoderInfos.isEmpty()) {
+                  // Suppress error querying secondary codec capabilities up to API level 23.
+                  Log.e(TAG, "Skipping codec " + codecName + " (failed to query capabilities)");
+                } else {
+                  // Rethrow error querying primary codec capabilities, or secondary codec
+                  // capabilities if API level is greater than 23.
+                  Log.e(TAG, "Failed to query codec " + codecName + " (" + supportedType + ")");
+                  throw e;
+                }
+              }
+            }
+          }
+        }
+      }
+      return decoderInfos;
+    } catch (Exception e) {
+      // If the underlying mediaserver is in a bad state, we may catch an IllegalStateException
+      // or an IllegalArgumentException here.
+      throw new DecoderQueryException(e);
+    }
+  }
+
+  /**
+   * Returns whether the specified codec is usable for decoding on the current device.
+   *
+   * @param info The codec information.
+   * @param name The name of the codec
+   * @param secureDecodersExplicit Whether secure decoders were explicitly listed, if present.
+   * @param requestedMimeType The originally requested MIME type, which may differ from the codec
+   *     key MIME type if the codec key is being considered as a fallback.
+   * @return Whether the specified codec is usable for decoding on the current device.
+   */
+  private static boolean isCodecUsableDecoder(android.media.MediaCodecInfo info, String name,
+      boolean secureDecodersExplicit, String requestedMimeType) {
+    if (info.isEncoder() || (!secureDecodersExplicit && name.endsWith(".secure"))) {
+      return false;
+    }
+
+    // Work around broken audio decoders.
+    if (Util.SDK_INT < 21
+        && ("CIPAACDecoder".equals(name)
+            || "CIPMP3Decoder".equals(name)
+            || "CIPVorbisDecoder".equals(name)
+            || "CIPAMRNBDecoder".equals(name)
+            || "AACDecoder".equals(name)
+            || "MP3Decoder".equals(name))) {
+      return false;
+    }
+
+    // Work around https://github.com/google/ExoPlayer/issues/398.
+    if (Util.SDK_INT < 18 && "OMX.SEC.MP3.Decoder".equals(name)) {
+      return false;
+    }
+
+    // Work around https://github.com/google/ExoPlayer/issues/1528 and
+    // https://github.com/google/ExoPlayer/issues/3171.
+    if (Util.SDK_INT < 18 && "OMX.MTK.AUDIO.DECODER.AAC".equals(name)
+        && ("a70".equals(Util.DEVICE)
+            || ("Xiaomi".equals(Util.MANUFACTURER) && Util.DEVICE.startsWith("HM")))) {
+      return false;
+    }
+
+    // Work around an issue where querying/creating a particular MP3 decoder on some devices on
+    // platform API version 16 fails.
+    if (Util.SDK_INT == 16
+        && "OMX.qcom.audio.decoder.mp3".equals(name)
+        && ("dlxu".equals(Util.DEVICE) // HTC Butterfly
+            || "protou".equals(Util.DEVICE) // HTC Desire X
+            || "ville".equals(Util.DEVICE) // HTC One S
+            || "villeplus".equals(Util.DEVICE)
+            || "villec2".equals(Util.DEVICE)
+            || Util.DEVICE.startsWith("gee") // LGE Optimus G
+            || "C6602".equals(Util.DEVICE) // Sony Xperia Z
+            || "C6603".equals(Util.DEVICE)
+            || "C6606".equals(Util.DEVICE)
+            || "C6616".equals(Util.DEVICE)
+            || "L36h".equals(Util.DEVICE)
+            || "SO-02E".equals(Util.DEVICE))) {
+      return false;
+    }
+
+    // Work around an issue where large timestamps are not propagated correctly.
+    if (Util.SDK_INT == 16
+        && "OMX.qcom.audio.decoder.aac".equals(name)
+        && ("C1504".equals(Util.DEVICE) // Sony Xperia E
+            || "C1505".equals(Util.DEVICE)
+            || "C1604".equals(Util.DEVICE) // Sony Xperia E dual
+            || "C1605".equals(Util.DEVICE))) {
+      return false;
+    }
+
+    // Work around https://github.com/google/ExoPlayer/issues/3249.
+    if (Util.SDK_INT < 24
+        && ("OMX.SEC.aac.dec".equals(name) || "OMX.Exynos.AAC.Decoder".equals(name))
+        && "samsung".equals(Util.MANUFACTURER)
+        && (Util.DEVICE.startsWith("zeroflte") // Galaxy S6
+            || Util.DEVICE.startsWith("zerolte") // Galaxy S6 Edge
+            || Util.DEVICE.startsWith("zenlte") // Galaxy S6 Edge+
+            || "SC-05G".equals(Util.DEVICE) // Galaxy S6
+            || "marinelteatt".equals(Util.DEVICE) // Galaxy S6 Active
+            || "404SC".equals(Util.DEVICE) // Galaxy S6 Edge
+            || "SC-04G".equals(Util.DEVICE)
+            || "SCV31".equals(Util.DEVICE))) {
+      return false;
+    }
+
+    // Work around https://github.com/google/ExoPlayer/issues/548.
+    // VP8 decoder on Samsung Galaxy S3/S4/S4 Mini/Tab 3/Note 2 does not render video.
+    if (Util.SDK_INT <= 19
+        && "OMX.SEC.vp8.dec".equals(name) && "samsung".equals(Util.MANUFACTURER)
+        && (Util.DEVICE.startsWith("d2") || Util.DEVICE.startsWith("serrano")
+            || Util.DEVICE.startsWith("jflte") || Util.DEVICE.startsWith("santos")
+            || Util.DEVICE.startsWith("t0"))) {
+      return false;
+    }
+
+    // VP8 decoder on Samsung Galaxy S4 cannot be queried.
+    if (Util.SDK_INT <= 19 && Util.DEVICE.startsWith("jflte")
+        && "OMX.qcom.video.decoder.vp8".equals(name)) {
+      return false;
+    }
+
+    // MTK E-AC3 decoder doesn't support decoding JOC streams in 2-D. See [Internal: b/69400041].
+    if (MimeTypes.AUDIO_E_AC3_JOC.equals(requestedMimeType)
+        && "OMX.MTK.AUDIO.DECODER.DSPAC3".equals(name)) {
+      return false;
+    }
+
+    return true;
+  }
+
+  /**
+   * Modifies a list of {@link MediaCodecInfo}s to apply workarounds where we know better than the
+   * platform.
+   *
+   * @param decoderInfos The list to modify.
+   */
+  private static void applyWorkarounds(List<MediaCodecInfo> decoderInfos) {
+    if (Util.SDK_INT < 26 && decoderInfos.size() > 1
+        && MTK_RAW_DECODER_NAME.equals(decoderInfos.get(0).name)) {
+      // Prefer the Google raw decoder over the MediaTek one [Internal: b/62337687].
+      for (int i = 1; i < decoderInfos.size(); i++) {
+        MediaCodecInfo decoderInfo = decoderInfos.get(i);
+        if (GOOGLE_RAW_DECODER_NAME.equals(decoderInfo.name)) {
+          decoderInfos.remove(i);
+          decoderInfos.add(0, decoderInfo);
+          break;
+        }
+      }
+    }
+  }
+
+  /**
+   * Returns whether the decoder is known to fail when adapting, despite advertising itself as an
+   * adaptive decoder.
+   *
+   * @param name The decoder name.
+   * @return True if the decoder is known to fail when adapting.
+   */
+  private static boolean codecNeedsDisableAdaptationWorkaround(String name) {
+    return Util.SDK_INT <= 22
+        && ("ODROID-XU3".equals(Util.MODEL) || "Nexus 10".equals(Util.MODEL))
+        && ("OMX.Exynos.AVC.Decoder".equals(name) || "OMX.Exynos.AVC.Decoder.secure".equals(name));
   }
 
   private static Pair<Integer, Integer> getHevcProfileAndLevel(String codec, String[] parts) {
@@ -388,13 +482,13 @@ public final class MediaCodecUtil {
       return null;
     }
 
-    Integer profile = AVC_PROFILE_NUMBER_TO_CONST.get(profileInteger);
-    if (profile == null) {
+    int profile = AVC_PROFILE_NUMBER_TO_CONST.get(profileInteger, -1);
+    if (profile == -1) {
       Log.w(TAG, "Unknown AVC profile: " + profileInteger);
       return null;
     }
-    Integer level = AVC_LEVEL_NUMBER_TO_CONST.get(levelInteger);
-    if (level == null) {
+    int level = AVC_LEVEL_NUMBER_TO_CONST.get(levelInteger, -1);
+    if (level == -1) {
       Log.w(TAG, "Unknown AVC level: " + levelInteger);
       return null;
     }
@@ -425,6 +519,7 @@ public final class MediaCodecUtil {
       case CodecProfileLevel.AVCLevel42: return 8704 * 16 * 16;
       case CodecProfileLevel.AVCLevel5: return 22080 * 16 * 16;
       case CodecProfileLevel.AVCLevel51: return 36864 * 16 * 16;
+      case CodecProfileLevel.AVCLevel52: return 36864 * 16 * 16;
       default: return -1;
     }
   }
@@ -544,7 +639,7 @@ public final class MediaCodecUtil {
     }
 
     @Override
-    public boolean equals(Object obj) {
+    public boolean equals(@Nullable Object obj) {
       if (this == obj) {
         return true;
       }

@@ -19,6 +19,7 @@ import android.os.Parcel;
 import android.os.Parcelable;
 import org.telegram.messenger.exoplayer2.C;
 import org.telegram.messenger.exoplayer2.util.ParsableByteArray;
+import org.telegram.messenger.exoplayer2.util.TimestampAdjuster;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -28,32 +29,83 @@ import java.util.List;
  */
 public final class SpliceInsertCommand extends SpliceCommand {
 
+  /**
+   * The splice event id.
+   */
   public final long spliceEventId;
+  /**
+   * True if the event with id {@link #spliceEventId} has been canceled.
+   */
   public final boolean spliceEventCancelIndicator;
+  /**
+   * If true, the splice event is an opportunity to exit from the network feed. If false, indicates
+   * an opportunity to return to the network feed.
+   */
   public final boolean outOfNetworkIndicator;
+  /**
+   * Whether the splice mode is program splice mode, whereby all PIDs/components are to be spliced.
+   * If false, splicing is done per PID/component.
+   */
   public final boolean programSpliceFlag;
+  /**
+   * Whether splicing should be done at the nearest opportunity. If false, splicing should be done
+   * at the moment indicated by {@link #programSplicePlaybackPositionUs} or
+   * {@link ComponentSplice#componentSplicePlaybackPositionUs}, depending on
+   * {@link #programSpliceFlag}.
+   */
   public final boolean spliceImmediateFlag;
+  /**
+   * If {@link #programSpliceFlag} is true, the PTS at which the program splice should occur.
+   * {@link C#TIME_UNSET} otherwise.
+   */
   public final long programSplicePts;
+  /**
+   * Equivalent to {@link #programSplicePts} but in the playback timebase.
+   */
+  public final long programSplicePlaybackPositionUs;
+  /**
+   * If {@link #programSpliceFlag} is false, a non-empty list containing the
+   * {@link ComponentSplice}s. Otherwise, an empty list.
+   */
   public final List<ComponentSplice> componentSpliceList;
+  /**
+   * If {@link #breakDurationUs} is not {@link C#TIME_UNSET}, defines whether
+   * {@link #breakDurationUs} should be used to know when to return to the network feed. If
+   * {@link #breakDurationUs} is {@link C#TIME_UNSET}, the value is undefined.
+   */
   public final boolean autoReturn;
-  public final long breakDuration;
+  /**
+   * The duration of the splice in microseconds, or {@link C#TIME_UNSET} if no duration is present.
+   */
+  public final long breakDurationUs;
+  /**
+   * The unique program id as defined in SCTE35, Section 9.3.3.
+   */
   public final int uniqueProgramId;
+  /**
+   * Holds the value of {@code avail_num} as defined in SCTE35, Section 9.3.3.
+   */
   public final int availNum;
+  /**
+   * Holds the value of {@code avails_expected} as defined in SCTE35, Section 9.3.3.
+   */
   public final int availsExpected;
 
   private SpliceInsertCommand(long spliceEventId, boolean spliceEventCancelIndicator,
       boolean outOfNetworkIndicator, boolean programSpliceFlag, boolean spliceImmediateFlag,
-      long programSplicePts, List<ComponentSplice> componentSpliceList, boolean autoReturn,
-      long breakDuration, int uniqueProgramId, int availNum, int availsExpected) {
+      long programSplicePts, long programSplicePlaybackPositionUs,
+      List<ComponentSplice> componentSpliceList, boolean autoReturn, long breakDurationUs,
+      int uniqueProgramId, int availNum, int availsExpected) {
     this.spliceEventId = spliceEventId;
     this.spliceEventCancelIndicator = spliceEventCancelIndicator;
     this.outOfNetworkIndicator = outOfNetworkIndicator;
     this.programSpliceFlag = programSpliceFlag;
     this.spliceImmediateFlag = spliceImmediateFlag;
     this.programSplicePts = programSplicePts;
+    this.programSplicePlaybackPositionUs = programSplicePlaybackPositionUs;
     this.componentSpliceList = Collections.unmodifiableList(componentSpliceList);
     this.autoReturn = autoReturn;
-    this.breakDuration = breakDuration;
+    this.breakDurationUs = breakDurationUs;
     this.uniqueProgramId = uniqueProgramId;
     this.availNum = availNum;
     this.availsExpected = availsExpected;
@@ -66,6 +118,7 @@ public final class SpliceInsertCommand extends SpliceCommand {
     programSpliceFlag = in.readByte() == 1;
     spliceImmediateFlag = in.readByte() == 1;
     programSplicePts = in.readLong();
+    programSplicePlaybackPositionUs = in.readLong();
     int componentSpliceListSize = in.readInt();
     List<ComponentSplice> componentSpliceList = new ArrayList<>(componentSpliceListSize);
     for (int i = 0; i < componentSpliceListSize; i++) {
@@ -73,14 +126,14 @@ public final class SpliceInsertCommand extends SpliceCommand {
     }
     this.componentSpliceList = Collections.unmodifiableList(componentSpliceList);
     autoReturn = in.readByte() == 1;
-    breakDuration = in.readLong();
+    breakDurationUs = in.readLong();
     uniqueProgramId = in.readInt();
     availNum = in.readInt();
     availsExpected = in.readInt();
   }
 
   /* package */ static SpliceInsertCommand parseFromSection(ParsableByteArray sectionData,
-      long ptsAdjustment) {
+      long ptsAdjustment, TimestampAdjuster timestampAdjuster) {
     long spliceEventId = sectionData.readUnsignedInt();
     // splice_event_cancel_indicator(1), reserved(7).
     boolean spliceEventCancelIndicator = (sectionData.readUnsignedByte() & 0x80) != 0;
@@ -88,12 +141,12 @@ public final class SpliceInsertCommand extends SpliceCommand {
     boolean programSpliceFlag = false;
     boolean spliceImmediateFlag = false;
     long programSplicePts = C.TIME_UNSET;
-    ArrayList<ComponentSplice> componentSplices = new ArrayList<>();
+    List<ComponentSplice> componentSplices = Collections.emptyList();
     int uniqueProgramId = 0;
     int availNum = 0;
     int availsExpected = 0;
     boolean autoReturn = false;
-    long duration = C.TIME_UNSET;
+    long breakDurationUs = C.TIME_UNSET;
     if (!spliceEventCancelIndicator) {
       int headerByte = sectionData.readUnsignedByte();
       outOfNetworkIndicator = (headerByte & 0x80) != 0;
@@ -112,21 +165,24 @@ public final class SpliceInsertCommand extends SpliceCommand {
           if (!spliceImmediateFlag) {
             componentSplicePts = TimeSignalCommand.parseSpliceTime(sectionData, ptsAdjustment);
           }
-          componentSplices.add(new ComponentSplice(componentTag, componentSplicePts));
+          componentSplices.add(new ComponentSplice(componentTag, componentSplicePts,
+              timestampAdjuster.adjustTsTimestamp(componentSplicePts)));
         }
       }
       if (durationFlag) {
         long firstByte = sectionData.readUnsignedByte();
         autoReturn = (firstByte & 0x80) != 0;
-        duration = ((firstByte & 0x01) << 32) | sectionData.readUnsignedInt();
+        long breakDuration90khz = ((firstByte & 0x01) << 32) | sectionData.readUnsignedInt();
+        breakDurationUs = breakDuration90khz * 1000 / 90;
       }
       uniqueProgramId = sectionData.readUnsignedShort();
       availNum = sectionData.readUnsignedByte();
       availsExpected = sectionData.readUnsignedByte();
     }
     return new SpliceInsertCommand(spliceEventId, spliceEventCancelIndicator, outOfNetworkIndicator,
-        programSpliceFlag, spliceImmediateFlag, programSplicePts, componentSplices, autoReturn,
-        duration, uniqueProgramId, availNum, availsExpected);
+        programSpliceFlag, spliceImmediateFlag, programSplicePts,
+        timestampAdjuster.adjustTsTimestamp(programSplicePts), componentSplices, autoReturn,
+        breakDurationUs, uniqueProgramId, availNum, availsExpected);
   }
 
   /**
@@ -136,19 +192,23 @@ public final class SpliceInsertCommand extends SpliceCommand {
 
     public final int componentTag;
     public final long componentSplicePts;
+    public final long componentSplicePlaybackPositionUs;
 
-    private ComponentSplice(int componentTag, long componentSplicePts) {
+    private ComponentSplice(int componentTag, long componentSplicePts,
+        long componentSplicePlaybackPositionUs) {
       this.componentTag = componentTag;
       this.componentSplicePts = componentSplicePts;
+      this.componentSplicePlaybackPositionUs = componentSplicePlaybackPositionUs;
     }
 
     public void writeToParcel(Parcel dest) {
       dest.writeInt(componentTag);
       dest.writeLong(componentSplicePts);
+      dest.writeLong(componentSplicePlaybackPositionUs);
     }
 
     public static ComponentSplice createFromParcel(Parcel in) {
-      return new ComponentSplice(in.readInt(), in.readLong());
+      return new ComponentSplice(in.readInt(), in.readLong(), in.readLong());
     }
 
   }
@@ -163,13 +223,14 @@ public final class SpliceInsertCommand extends SpliceCommand {
     dest.writeByte((byte) (programSpliceFlag ? 1 : 0));
     dest.writeByte((byte) (spliceImmediateFlag ? 1 : 0));
     dest.writeLong(programSplicePts);
+    dest.writeLong(programSplicePlaybackPositionUs);
     int componentSpliceListSize = componentSpliceList.size();
     dest.writeInt(componentSpliceListSize);
     for (int i = 0; i < componentSpliceListSize; i++) {
       componentSpliceList.get(i).writeToParcel(dest);
     }
     dest.writeByte((byte) (autoReturn ? 1 : 0));
-    dest.writeLong(breakDuration);
+    dest.writeLong(breakDurationUs);
     dest.writeInt(uniqueProgramId);
     dest.writeInt(availNum);
     dest.writeInt(availsExpected);

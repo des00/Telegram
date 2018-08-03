@@ -29,12 +29,21 @@ import java.io.OutputStream;
 
 /**
  * Writes data into a cache.
+ *
+ * <p>If the {@link DataSpec} object used with {@link #open(DataSpec)} method call has the {@code
+ * length} field set to {@link C#LENGTH_UNSET} but {@link
+ * DataSpec#FLAG_ALLOW_CACHING_UNKNOWN_LENGTH} isn't set then {@link #write(byte[], int, int)} calls
+ * are ignored.
  */
 public final class CacheDataSink implements DataSink {
+
+  /** Default buffer size in bytes. */
+  public static final int DEFAULT_BUFFER_SIZE = 20480;
 
   private final Cache cache;
   private final long maxCacheFileSize;
   private final int bufferSize;
+  private final boolean syncFileDescriptor;
 
   private DataSpec dataSpec;
   private File file;
@@ -56,35 +65,67 @@ public final class CacheDataSink implements DataSink {
   }
 
   /**
+   * Constructs a CacheDataSink using the {@link #DEFAULT_BUFFER_SIZE}.
+   *
    * @param cache The cache into which data should be written.
    * @param maxCacheFileSize The maximum size of a cache file, in bytes. If the sink is opened for
    *    a {@link DataSpec} whose size exceeds this value, then the data will be fragmented into
    *    multiple cache files.
    */
   public CacheDataSink(Cache cache, long maxCacheFileSize) {
-    this(cache, maxCacheFileSize, 0);
+    this(cache, maxCacheFileSize, DEFAULT_BUFFER_SIZE, true);
+  }
+
+  /**
+   * Constructs a CacheDataSink using the {@link #DEFAULT_BUFFER_SIZE}.
+   *
+   * @param cache The cache into which data should be written.
+   * @param maxCacheFileSize The maximum size of a cache file, in bytes. If the sink is opened for a
+   *     {@link DataSpec} whose size exceeds this value, then the data will be fragmented into
+   *     multiple cache files.
+   * @param syncFileDescriptor Whether file descriptors are sync'd when closing output streams.
+   */
+  public CacheDataSink(Cache cache, long maxCacheFileSize, boolean syncFileDescriptor) {
+    this(cache, maxCacheFileSize, DEFAULT_BUFFER_SIZE, syncFileDescriptor);
   }
 
   /**
    * @param cache The cache into which data should be written.
-   * @param maxCacheFileSize The maximum size of a cache file, in bytes. If the sink is opened for
-   *    a {@link DataSpec} whose size exceeds this value, then the data will be fragmented into
-   *    multiple cache files.
+   * @param maxCacheFileSize The maximum size of a cache file, in bytes. If the sink is opened for a
+   *     {@link DataSpec} whose size exceeds this value, then the data will be fragmented into
+   *     multiple cache files.
    * @param bufferSize The buffer size in bytes for writing to a cache file. A zero or negative
-   *    value disables buffering.
+   *     value disables buffering.
    */
   public CacheDataSink(Cache cache, long maxCacheFileSize, int bufferSize) {
+    this(cache, maxCacheFileSize, bufferSize, true);
+  }
+
+  /**
+   * @param cache The cache into which data should be written.
+   * @param maxCacheFileSize The maximum size of a cache file, in bytes. If the sink is opened for a
+   *     {@link DataSpec} whose size exceeds this value, then the data will be fragmented into
+   *     multiple cache files.
+   * @param bufferSize The buffer size in bytes for writing to a cache file. A zero or negative
+   *     value disables buffering.
+   * @param syncFileDescriptor Whether file descriptors are sync'd when closing output streams.
+   */
+  public CacheDataSink(
+      Cache cache, long maxCacheFileSize, int bufferSize, boolean syncFileDescriptor) {
     this.cache = Assertions.checkNotNull(cache);
     this.maxCacheFileSize = maxCacheFileSize;
     this.bufferSize = bufferSize;
+    this.syncFileDescriptor = syncFileDescriptor;
   }
 
   @Override
   public void open(DataSpec dataSpec) throws CacheDataSinkException {
-    this.dataSpec = dataSpec;
-    if (dataSpec.length == C.LENGTH_UNSET) {
+    if (dataSpec.length == C.LENGTH_UNSET
+        && !dataSpec.isFlagSet(DataSpec.FLAG_ALLOW_CACHING_UNKNOWN_LENGTH)) {
+      this.dataSpec = null;
       return;
     }
+    this.dataSpec = dataSpec;
     dataSpecBytesWritten = 0;
     try {
       openNextOutputStream();
@@ -95,7 +136,7 @@ public final class CacheDataSink implements DataSink {
 
   @Override
   public void write(byte[] buffer, int offset, int length) throws CacheDataSinkException {
-    if (dataSpec.length == C.LENGTH_UNSET) {
+    if (dataSpec == null) {
       return;
     }
     try {
@@ -119,7 +160,7 @@ public final class CacheDataSink implements DataSink {
 
   @Override
   public void close() throws CacheDataSinkException {
-    if (dataSpec == null || dataSpec.length == C.LENGTH_UNSET) {
+    if (dataSpec == null) {
       return;
     }
     try {
@@ -130,8 +171,10 @@ public final class CacheDataSink implements DataSink {
   }
 
   private void openNextOutputStream() throws IOException {
+    long maxLength = dataSpec.length == C.LENGTH_UNSET ? maxCacheFileSize
+        : Math.min(dataSpec.length - dataSpecBytesWritten, maxCacheFileSize);
     file = cache.startFile(dataSpec.key, dataSpec.absoluteStreamPosition + dataSpecBytesWritten,
-        Math.min(dataSpec.length - dataSpecBytesWritten, maxCacheFileSize));
+        maxLength);
     underlyingFileOutputStream = new FileOutputStream(file);
     if (bufferSize > 0) {
       if (bufferedOutputStream == null) {
@@ -156,7 +199,9 @@ public final class CacheDataSink implements DataSink {
     boolean success = false;
     try {
       outputStream.flush();
-      underlyingFileOutputStream.getFD().sync();
+      if (syncFileDescriptor) {
+        underlyingFileOutputStream.getFD().sync();
+      }
       success = true;
     } finally {
       Util.closeQuietly(outputStream);

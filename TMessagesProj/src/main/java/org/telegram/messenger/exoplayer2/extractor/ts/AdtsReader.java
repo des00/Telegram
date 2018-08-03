@@ -19,6 +19,7 @@ import android.util.Log;
 import android.util.Pair;
 import org.telegram.messenger.exoplayer2.C;
 import org.telegram.messenger.exoplayer2.Format;
+import org.telegram.messenger.exoplayer2.ParserException;
 import org.telegram.messenger.exoplayer2.extractor.DummyTrackOutput;
 import org.telegram.messenger.exoplayer2.extractor.ExtractorOutput;
 import org.telegram.messenger.exoplayer2.extractor.TrackOutput;
@@ -33,7 +34,7 @@ import java.util.Collections;
 /**
  * Parses a continuous ADTS byte stream and extracts individual frames.
  */
-/* package */ final class AdtsReader implements ElementaryStreamReader {
+public final class AdtsReader implements ElementaryStreamReader {
 
   private static final String TAG = "AdtsReader";
 
@@ -61,6 +62,7 @@ import java.util.Collections;
   private final ParsableByteArray id3HeaderBuffer;
   private final String language;
 
+  private String formatId;
   private TrackOutput output;
   private TrackOutput id3Output;
 
@@ -108,11 +110,14 @@ import java.util.Collections;
 
   @Override
   public void createTracks(ExtractorOutput extractorOutput, TrackIdGenerator idGenerator) {
-    output = extractorOutput.track(idGenerator.getNextId());
+    idGenerator.generateNewId();
+    formatId = idGenerator.getFormatId();
+    output = extractorOutput.track(idGenerator.getTrackId(), C.TRACK_TYPE_AUDIO);
     if (exposeId3) {
-      id3Output = extractorOutput.track(idGenerator.getNextId());
-      id3Output.format(Format.createSampleFormat(null, MimeTypes.APPLICATION_ID3, null,
-          Format.NO_VALUE, null));
+      idGenerator.generateNewId();
+      id3Output = extractorOutput.track(idGenerator.getTrackId(), C.TRACK_TYPE_METADATA);
+      id3Output.format(Format.createSampleFormat(idGenerator.getFormatId(),
+          MimeTypes.APPLICATION_ID3, null, Format.NO_VALUE, null));
     } else {
       id3Output = new DummyTrackOutput();
     }
@@ -124,7 +129,7 @@ import java.util.Collections;
   }
 
   @Override
-  public void consume(ParsableByteArray data) {
+  public void consume(ParsableByteArray data) throws ParserException {
     while (data.bytesLeft() > 0) {
       switch (state) {
         case STATE_FINDING_SAMPLE:
@@ -272,7 +277,7 @@ import java.util.Collections;
   /**
    * Parses the sample header.
    */
-  private void parseAdtsHeader() {
+  private void parseAdtsHeader() throws ParserException {
     adtsScratch.setPosition(0);
 
     if (!hasOutputFormat) {
@@ -300,7 +305,7 @@ import java.util.Collections;
       Pair<Integer, Integer> audioParams = CodecSpecificDataUtil.parseAacAudioSpecificConfig(
           audioSpecificConfig);
 
-      Format format = Format.createAudioSampleFormat(null, MimeTypes.AUDIO_AAC, null,
+      Format format = Format.createAudioSampleFormat(formatId, MimeTypes.AUDIO_AAC, null,
           Format.NO_VALUE, Format.NO_VALUE, audioParams.second, audioParams.first,
           Collections.singletonList(audioSpecificConfig), null, 0, language);
       // In this class a sample is an access unit, but the MediaFormat sample rate specifies the

@@ -10,6 +10,7 @@ import android.media.audiofx.NoiseSuppressor;
 import android.os.Build;
 import android.util.Log;
 
+import org.telegram.messenger.BuildVars;
 import org.telegram.messenger.FileLog;
 
 import java.nio.ByteBuffer;
@@ -25,27 +26,45 @@ public class AudioTrackJNI{
 	private Thread thread;
 	private int bufferSize;
 	private long nativeInst;
+	private boolean needResampling;
 
 	public AudioTrackJNI(long nativeInst) {
 		this.nativeInst = nativeInst;
 	}
 
-	private int getBufferSize(int min) {
-		return Math.max(AudioTrack.getMinBufferSize(48000, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT), min);
+	private int getBufferSize(int min, int sampleRate) {
+		return Math.max(AudioTrack.getMinBufferSize(sampleRate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT), min);
 	}
 
 	public void init(int sampleRate, int bitsPerSample, int channels, int bufferSize) {
 		if (audioTrack != null) {
 			throw new IllegalStateException("already inited");
 		}
-		int size = getBufferSize(bufferSize);
+		int size = getBufferSize(bufferSize, 48000);
 		this.bufferSize = bufferSize;
-		audioTrack=new AudioTrack(AudioManager.STREAM_VOICE_CALL, sampleRate, channels==1 ? AudioFormat.CHANNEL_OUT_MONO : AudioFormat.CHANNEL_OUT_STEREO, AudioFormat.ENCODING_PCM_16BIT, size, AudioTrack.MODE_STREAM);
+		audioTrack=new AudioTrack(AudioManager.STREAM_VOICE_CALL, 48000, channels==1 ? AudioFormat.CHANNEL_OUT_MONO : AudioFormat.CHANNEL_OUT_STEREO, AudioFormat.ENCODING_PCM_16BIT, size, AudioTrack.MODE_STREAM);
+		if(audioTrack.getState()!=AudioTrack.STATE_INITIALIZED){
+			try{
+				audioTrack.release();
+			}catch(Throwable ignore){}
+			size=getBufferSize(bufferSize*6, 44100);
+			if (BuildVars.LOGS_ENABLED) {
+				FileLog.d("buffer size: " + size);
+			}
+			audioTrack=new AudioTrack(AudioManager.STREAM_VOICE_CALL, 44100, channels==1 ? AudioFormat.CHANNEL_OUT_MONO : AudioFormat.CHANNEL_OUT_STEREO, AudioFormat.ENCODING_PCM_16BIT, size, AudioTrack.MODE_STREAM);
+			needResampling=true;
+		}
 	}
 
 	public void stop() {
-		if(audioTrack!=null)
-			audioTrack.stop();
+		if (audioTrack != null) {
+			try {
+				audioTrack.stop();
+			} catch (Exception ignore) {
+
+			}
+
+		}
 	}
 
 	public void release() {
@@ -83,13 +102,27 @@ public class AudioTrackJNI{
 				try{
 					audioTrack.play();
 				}catch(Exception x){
-					FileLog.e("error starting AudioTrack", x);
+					if (BuildVars.LOGS_ENABLED) {
+						FileLog.e("error starting AudioTrack", x);
+					}
 					return;
 				}
+				ByteBuffer tmp48=needResampling ? ByteBuffer.allocateDirect(960*2) : null;
+				ByteBuffer tmp44=needResampling ? ByteBuffer.allocateDirect(882*2) : null;
 				while (running) {
 					try {
-						nativeCallback(buffer);
-						audioTrack.write(buffer, 0, 960*2);
+						if(needResampling){
+							nativeCallback(buffer);
+							tmp48.rewind();
+							tmp48.put(buffer);
+							Resampler.convert48to44(tmp48, tmp44);
+							tmp44.rewind();
+							tmp44.get(buffer, 0, 882*2);
+							audioTrack.write(buffer, 0, 882*2);
+						}else{
+							nativeCallback(buffer);
+							audioTrack.write(buffer, 0, 960*2);
+						}
 						if (!running) {
 							audioTrack.stop();
 							break;

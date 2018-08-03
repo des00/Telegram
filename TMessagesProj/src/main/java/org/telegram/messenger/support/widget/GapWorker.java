@@ -106,6 +106,10 @@ final class GapWorker implements Runnable {
 
         @Override
         public void addPosition(int layoutPosition, int pixelDistance) {
+            if (layoutPosition < 0) {
+                throw new IllegalArgumentException("Layout positions must be non-negative");
+            }
+
             if (pixelDistance < 0) {
                 throw new IllegalArgumentException("Pixel distance must be non-negative");
             }
@@ -145,6 +149,7 @@ final class GapWorker implements Runnable {
             if (mPrefetchArray != null) {
                 Arrays.fill(mPrefetchArray, -1);
             }
+            mCount = 0;
         }
     }
 
@@ -210,8 +215,10 @@ final class GapWorker implements Runnable {
         int totalTaskCount = 0;
         for (int i = 0; i < viewCount; i++) {
             RecyclerView view = mRecyclerViews.get(i);
-            view.mPrefetchRegistry.collectPrefetchPositionsFromView(view, false);
-            totalTaskCount += view.mPrefetchRegistry.mCount;
+            if (view.getWindowVisibility() == View.VISIBLE) {
+                view.mPrefetchRegistry.collectPrefetchPositionsFromView(view, false);
+                totalTaskCount += view.mPrefetchRegistry.mCount;
+            }
         }
 
         // Populate task list from prefetch data...
@@ -219,6 +226,11 @@ final class GapWorker implements Runnable {
         int totalTaskIndex = 0;
         for (int i = 0; i < viewCount; i++) {
             RecyclerView view = mRecyclerViews.get(i);
+            if (view.getWindowVisibility() != View.VISIBLE) {
+                // Invisible view, don't bother prefetching
+                continue;
+            }
+
             LayoutPrefetchRegistryImpl prefetchRegistry = view.mPrefetchRegistry;
             final int viewVelocity = Math.abs(prefetchRegistry.mPrefetchDx)
                     + Math.abs(prefetchRegistry.mPrefetchDy);
@@ -267,21 +279,27 @@ final class GapWorker implements Runnable {
         }
 
         RecyclerView.Recycler recycler = view.mRecycler;
-        RecyclerView.ViewHolder holder = recycler.tryGetViewHolderForPositionByDeadline(
-                position, false, deadlineNs);
+        RecyclerView.ViewHolder holder;
+        try {
+            view.onEnterLayoutOrScroll();
+            holder = recycler.tryGetViewHolderForPositionByDeadline(
+                    position, false, deadlineNs);
 
-        if (holder != null) {
-            if (holder.isBound()) {
-                // Only give the view a chance to go into the cache if binding succeeded
-                // Note that we must use public method, since item may need cleanup
-                recycler.recycleView(holder.itemView);
-            } else {
-                // Didn't bind, so we can't cache the view, but it will stay in the pool until
-                // next prefetch/traversal. If a View fails to bind, it means we didn't have
-                // enough time prior to the deadline (and won't for other instances of this
-                // type, during this GapWorker prefetch pass).
-                recycler.addViewHolderToRecycledViewPool(holder, false);
+            if (holder != null) {
+                if (holder.isBound() && !holder.isInvalid()) {
+                    // Only give the view a chance to go into the cache if binding succeeded
+                    // Note that we must use public method, since item may need cleanup
+                    recycler.recycleView(holder.itemView);
+                } else {
+                    // Didn't bind, so we can't cache the view, but it will stay in the pool until
+                    // next prefetch/traversal. If a View fails to bind, it means we didn't have
+                    // enough time prior to the deadline (and won't for other instances of this
+                    // type, during this GapWorker prefetch pass).
+                    recycler.addViewHolderToRecycledViewPool(holder, false);
+                }
             }
+        } finally {
+            view.onExitLayoutOrScroll(false);
         }
         return holder;
     }
@@ -323,7 +341,10 @@ final class GapWorker implements Runnable {
         long taskDeadlineNs = task.immediate ? RecyclerView.FOREVER_NS : deadlineNs;
         RecyclerView.ViewHolder holder = prefetchPositionWithDeadline(task.view,
                 task.position, taskDeadlineNs);
-        if (holder != null && holder.mNestedRecyclerView != null) {
+        if (holder != null
+                && holder.mNestedRecyclerView != null
+                && holder.isBound()
+                && !holder.isInvalid()) {
             prefetchInnerRecyclerViewWithDeadline(holder.mNestedRecyclerView.get(), deadlineNs);
         }
     }
@@ -354,18 +375,23 @@ final class GapWorker implements Runnable {
                 return;
             }
 
-            // Query last vsync so we can predict next one. Note that drawing time not yet
+            // Query most recent vsync so we can predict next one. Note that drawing time not yet
             // valid in animation/input callbacks, so query it here to be safe.
-            long lastFrameVsyncNs = TimeUnit.MILLISECONDS.toNanos(
-                    mRecyclerViews.get(0).getDrawingTime());
-            if (lastFrameVsyncNs == 0) {
-                // abort - couldn't get last vsync for estimating next
+            final int size = mRecyclerViews.size();
+            long latestFrameVsyncMs = 0;
+            for (int i = 0; i < size; i++) {
+                RecyclerView view = mRecyclerViews.get(i);
+                if (view.getWindowVisibility() == View.VISIBLE) {
+                    latestFrameVsyncMs = Math.max(view.getDrawingTime(), latestFrameVsyncMs);
+                }
+            }
+
+            if (latestFrameVsyncMs == 0) {
+                // abort - either no views visible, or couldn't get last vsync for estimating next
                 return;
             }
 
-            // TODO: consider rebasing deadline if frame was already dropped due to long UI work.
-            // Next frame will still wait for VSYNC, so we can still use the gap if it exists.
-            long nextFrameNs = lastFrameVsyncNs + mFrameIntervalNs;
+            long nextFrameNs = TimeUnit.MILLISECONDS.toNanos(latestFrameVsyncMs) + mFrameIntervalNs;
 
             prefetch(nextFrameNs);
 

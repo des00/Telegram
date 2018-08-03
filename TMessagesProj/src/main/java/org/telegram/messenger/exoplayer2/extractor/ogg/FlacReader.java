@@ -18,6 +18,7 @@ package org.telegram.messenger.exoplayer2.extractor.ogg;
 import org.telegram.messenger.exoplayer2.Format;
 import org.telegram.messenger.exoplayer2.extractor.ExtractorInput;
 import org.telegram.messenger.exoplayer2.extractor.SeekMap;
+import org.telegram.messenger.exoplayer2.extractor.SeekPoint;
 import org.telegram.messenger.exoplayer2.util.FlacStreamInfo;
 import org.telegram.messenger.exoplayer2.util.MimeTypes;
 import org.telegram.messenger.exoplayer2.util.ParsableByteArray;
@@ -118,8 +119,9 @@ import java.util.List;
       case 14:
       case 15:
         return 256 << (blockSizeCode - 8);
+      default:
+        return -1;
     }
-    return -1;
   }
 
   private class FlacOggSeeker implements OggSeeker, SeekMap {
@@ -127,12 +129,15 @@ import java.util.List;
     private static final int METADATA_LENGTH_OFFSET = 1;
     private static final int SEEK_POINT_SIZE = 18;
 
-    private long[] sampleNumbers;
-    private long[] offsets;
-    private long firstFrameOffset = -1;
-    private volatile long queriedGranule;
-    private volatile long seekedGranule;
-    private long currentGranule = -1;
+    private long[] seekPointGranules;
+    private long[] seekPointOffsets;
+    private long firstFrameOffset;
+    private long pendingSeekGranule;
+
+    public FlacOggSeeker() {
+      firstFrameOffset = -1;
+      pendingSeekGranule = -1;
+    }
 
     public void setFirstFrameOffset(long firstFrameOffset) {
       this.firstFrameOffset = firstFrameOffset;
@@ -141,40 +146,40 @@ import java.util.List;
     /**
      * Parses a FLAC file seek table metadata structure and initializes internal fields.
      *
-     * @param data
-     *     A ParsableByteArray including whole seek table metadata block. Its position should be set
-     *     to the beginning of the block.
+     * @param data A {@link ParsableByteArray} including whole seek table metadata block. Its
+     *     position should be set to the beginning of the block.
      * @see <a href="https://xiph.org/flac/format.html#metadata_block_seektable">FLAC format
-     * METADATA_BLOCK_SEEKTABLE</a>
+     *     METADATA_BLOCK_SEEKTABLE</a>
      */
     public void parseSeekTable(ParsableByteArray data) {
       data.skipBytes(METADATA_LENGTH_OFFSET);
       int length = data.readUnsignedInt24();
       int numberOfSeekPoints = length / SEEK_POINT_SIZE;
-
-      sampleNumbers = new long[numberOfSeekPoints];
-      offsets = new long[numberOfSeekPoints];
-
+      seekPointGranules = new long[numberOfSeekPoints];
+      seekPointOffsets = new long[numberOfSeekPoints];
       for (int i = 0; i < numberOfSeekPoints; i++) {
-        sampleNumbers[i] = data.readLong();
-        offsets[i] = data.readLong();
+        seekPointGranules[i] = data.readLong();
+        seekPointOffsets[i] = data.readLong();
         data.skipBytes(2); // Skip "Number of samples in the target frame."
       }
     }
 
     @Override
     public long read(ExtractorInput input) throws IOException, InterruptedException {
-      if (currentGranule >= 0) {
-        currentGranule = -currentGranule - 2;
-        return currentGranule;
+      if (pendingSeekGranule >= 0) {
+        long result = -(pendingSeekGranule + 2);
+        pendingSeekGranule = -1;
+        return result;
       }
       return -1;
     }
 
     @Override
-    public synchronized long startSeek() {
-      currentGranule = seekedGranule;
-      return queriedGranule;
+    public long startSeek(long timeUs) {
+      long granule = convertTimeToGranule(timeUs);
+      int index = Util.binarySearchFloor(seekPointGranules, granule, true, true);
+      pendingSeekGranule = seekPointGranules[index];
+      return granule;
     }
 
     @Override
@@ -188,11 +193,20 @@ import java.util.List;
     }
 
     @Override
-    public synchronized long getPosition(long timeUs) {
-      queriedGranule = convertTimeToGranule(timeUs);
-      int index = Util.binarySearchFloor(sampleNumbers, queriedGranule, true, true);
-      seekedGranule = sampleNumbers[index];
-      return firstFrameOffset + offsets[index];
+    public SeekPoints getSeekPoints(long timeUs) {
+      long granule = convertTimeToGranule(timeUs);
+      int index = Util.binarySearchFloor(seekPointGranules, granule, true, true);
+      long seekTimeUs = convertGranuleToTime(seekPointGranules[index]);
+      long seekPosition = firstFrameOffset + seekPointOffsets[index];
+      SeekPoint seekPoint = new SeekPoint(seekTimeUs, seekPosition);
+      if (seekTimeUs >= timeUs || index == seekPointGranules.length - 1) {
+        return new SeekPoints(seekPoint);
+      } else {
+        long secondSeekTimeUs = convertGranuleToTime(seekPointGranules[index + 1]);
+        long secondSeekPosition = firstFrameOffset + seekPointOffsets[index + 1];
+        SeekPoint secondSeekPoint = new SeekPoint(secondSeekTimeUs, secondSeekPosition);
+        return new SeekPoints(seekPoint, secondSeekPoint);
+      }
     }
 
     @Override

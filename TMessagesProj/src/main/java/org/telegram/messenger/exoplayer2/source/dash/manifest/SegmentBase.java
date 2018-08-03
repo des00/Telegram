@@ -84,7 +84,7 @@ public abstract class SegmentBase {
       this.indexLength = indexLength;
     }
 
-    public SingleSegmentBase(String uri) {
+    public SingleSegmentBase() {
       this(null, 1, 0, 0, 0);
     }
 
@@ -99,7 +99,7 @@ public abstract class SegmentBase {
    */
   public abstract static class MultiSegmentBase extends SegmentBase {
 
-    /* package */ final int startNumber;
+    /* package */ final long startNumber;
     /* package */ final long duration;
     /* package */ final List<SegmentTimelineElement> segmentTimeline;
 
@@ -111,39 +111,46 @@ public abstract class SegmentBase {
      *     division of this value and {@code timescale}.
      * @param startNumber The sequence number of the first segment.
      * @param duration The duration of each segment in the case of fixed duration segments. The
-     *     value in seconds is the division of this value and {@code timescale}. If
-     *     {@code segmentTimeline} is non-null then this parameter is ignored.
+     *     value in seconds is the division of this value and {@code timescale}. If {@code
+     *     segmentTimeline} is non-null then this parameter is ignored.
      * @param segmentTimeline A segment timeline corresponding to the segments. If null, then
      *     segments are assumed to be of fixed duration as specified by the {@code duration}
      *     parameter.
      */
-    public MultiSegmentBase(RangedUri initialization, long timescale, long presentationTimeOffset,
-        int startNumber, long duration, List<SegmentTimelineElement> segmentTimeline) {
+    public MultiSegmentBase(
+        RangedUri initialization,
+        long timescale,
+        long presentationTimeOffset,
+        long startNumber,
+        long duration,
+        List<SegmentTimelineElement> segmentTimeline) {
       super(initialization, timescale, presentationTimeOffset);
       this.startNumber = startNumber;
       this.duration = duration;
       this.segmentTimeline = segmentTimeline;
     }
 
-    /**
-     * @see DashSegmentIndex#getSegmentNum(long, long)
-     */
-    public int getSegmentNum(long timeUs, long periodDurationUs) {
-      final int firstSegmentNum = getFirstSegmentNum();
-      int lowIndex = firstSegmentNum;
-      int highIndex = getLastSegmentNum(periodDurationUs);
+    /** @see DashSegmentIndex#getSegmentNum(long, long) */
+    public long getSegmentNum(long timeUs, long periodDurationUs) {
+      final long firstSegmentNum = getFirstSegmentNum();
+      final long segmentCount = getSegmentCount(periodDurationUs);
+      if (segmentCount == 0) {
+        return firstSegmentNum;
+      }
       if (segmentTimeline == null) {
         // All segments are of equal duration (with the possible exception of the last one).
         long durationUs = (duration * C.MICROS_PER_SECOND) / timescale;
-        int segmentNum = startNumber + (int) (timeUs / durationUs);
+        long segmentNum = startNumber + timeUs / durationUs;
         // Ensure we stay within bounds.
-        return segmentNum < lowIndex ? lowIndex
-            : highIndex != DashSegmentIndex.INDEX_UNBOUNDED && segmentNum > highIndex ? highIndex
-            : segmentNum;
+        return segmentNum < firstSegmentNum ? firstSegmentNum
+            : segmentCount == DashSegmentIndex.INDEX_UNBOUNDED ? segmentNum
+            : Math.min(segmentNum, firstSegmentNum + segmentCount - 1);
       } else {
-        // The high index cannot be unbounded. Identify the segment using binary search.
+        // The index cannot be unbounded. Identify the segment using binary search.
+        long lowIndex = firstSegmentNum;
+        long highIndex = firstSegmentNum + segmentCount - 1;
         while (lowIndex <= highIndex) {
-          int midIndex = (lowIndex + highIndex) / 2;
+          long midIndex = lowIndex + (highIndex - lowIndex) / 2;
           long midTimeUs = getSegmentTimeUs(midIndex);
           if (midTimeUs < timeUs) {
             lowIndex = midIndex + 1;
@@ -157,28 +164,27 @@ public abstract class SegmentBase {
       }
     }
 
-    /**
-     * @see DashSegmentIndex#getDurationUs(int, long)
-     */
-    public final long getSegmentDurationUs(int sequenceNumber, long periodDurationUs) {
+    /** @see DashSegmentIndex#getDurationUs(long, long) */
+    public final long getSegmentDurationUs(long sequenceNumber, long periodDurationUs) {
       if (segmentTimeline != null) {
-        long duration = segmentTimeline.get(sequenceNumber - startNumber).duration;
+        long duration = segmentTimeline.get((int) (sequenceNumber - startNumber)).duration;
         return (duration * C.MICROS_PER_SECOND) / timescale;
       } else {
-        return sequenceNumber == getLastSegmentNum(periodDurationUs)
+        int segmentCount = getSegmentCount(periodDurationUs);
+        return segmentCount != DashSegmentIndex.INDEX_UNBOUNDED
+            && sequenceNumber == (getFirstSegmentNum() + segmentCount - 1)
             ? (periodDurationUs - getSegmentTimeUs(sequenceNumber))
             : ((duration * C.MICROS_PER_SECOND) / timescale);
       }
     }
 
-    /**
-     * @see DashSegmentIndex#getTimeUs(int)
-     */
-    public final long getSegmentTimeUs(int sequenceNumber) {
+    /** @see DashSegmentIndex#getTimeUs(long) */
+    public final long getSegmentTimeUs(long sequenceNumber) {
       long unscaledSegmentTime;
       if (segmentTimeline != null) {
-        unscaledSegmentTime = segmentTimeline.get(sequenceNumber - startNumber).startTime
-            - presentationTimeOffset;
+        unscaledSegmentTime =
+            segmentTimeline.get((int) (sequenceNumber - startNumber)).startTime
+                - presentationTimeOffset;
       } else {
         unscaledSegmentTime = (sequenceNumber - startNumber) * duration;
       }
@@ -189,21 +195,19 @@ public abstract class SegmentBase {
      * Returns a {@link RangedUri} defining the location of a segment for the given index in the
      * given representation.
      *
-     * @see DashSegmentIndex#getSegmentUrl(int)
+     * @see DashSegmentIndex#getSegmentUrl(long)
      */
-    public abstract RangedUri getSegmentUrl(Representation representation, int index);
+    public abstract RangedUri getSegmentUrl(Representation representation, long index);
 
-    /**
-     * @see DashSegmentIndex#getFirstSegmentNum()
-     */
-    public int getFirstSegmentNum() {
+    /** @see DashSegmentIndex#getFirstSegmentNum() */
+    public long getFirstSegmentNum() {
       return startNumber;
     }
 
     /**
-     * @see DashSegmentIndex#getLastSegmentNum(long)
+     * @see DashSegmentIndex#getSegmentCount(long)
      */
-    public abstract int getLastSegmentNum(long periodDurationUs);
+    public abstract int getSegmentCount(long periodDurationUs);
 
     /**
      * @see DashSegmentIndex#isExplicit()
@@ -229,15 +233,20 @@ public abstract class SegmentBase {
      *     division of this value and {@code timescale}.
      * @param startNumber The sequence number of the first segment.
      * @param duration The duration of each segment in the case of fixed duration segments. The
-     *     value in seconds is the division of this value and {@code timescale}. If
-     *     {@code segmentTimeline} is non-null then this parameter is ignored.
+     *     value in seconds is the division of this value and {@code timescale}. If {@code
+     *     segmentTimeline} is non-null then this parameter is ignored.
      * @param segmentTimeline A segment timeline corresponding to the segments. If null, then
      *     segments are assumed to be of fixed duration as specified by the {@code duration}
      *     parameter.
      * @param mediaSegments A list of {@link RangedUri}s indicating the locations of the segments.
      */
-    public SegmentList(RangedUri initialization, long timescale, long presentationTimeOffset,
-        int startNumber, long duration, List<SegmentTimelineElement> segmentTimeline,
+    public SegmentList(
+        RangedUri initialization,
+        long timescale,
+        long presentationTimeOffset,
+        long startNumber,
+        long duration,
+        List<SegmentTimelineElement> segmentTimeline,
         List<RangedUri> mediaSegments) {
       super(initialization, timescale, presentationTimeOffset, startNumber, duration,
           segmentTimeline);
@@ -245,13 +254,13 @@ public abstract class SegmentBase {
     }
 
     @Override
-    public RangedUri getSegmentUrl(Representation representation, int sequenceNumber) {
-      return mediaSegments.get(sequenceNumber - startNumber);
+    public RangedUri getSegmentUrl(Representation representation, long sequenceNumber) {
+      return mediaSegments.get((int) (sequenceNumber - startNumber));
     }
 
     @Override
-    public int getLastSegmentNum(long periodDurationUs) {
-      return startNumber + mediaSegments.size() - 1;
+    public int getSegmentCount(long periodDurationUs) {
+      return mediaSegments.size();
     }
 
     @Override
@@ -278,8 +287,8 @@ public abstract class SegmentBase {
      *     division of this value and {@code timescale}.
      * @param startNumber The sequence number of the first segment.
      * @param duration The duration of each segment in the case of fixed duration segments. The
-     *     value in seconds is the division of this value and {@code timescale}. If
-     *     {@code segmentTimeline} is non-null then this parameter is ignored.
+     *     value in seconds is the division of this value and {@code timescale}. If {@code
+     *     segmentTimeline} is non-null then this parameter is ignored.
      * @param segmentTimeline A segment timeline corresponding to the segments. If null, then
      *     segments are assumed to be of fixed duration as specified by the {@code duration}
      *     parameter.
@@ -288,9 +297,15 @@ public abstract class SegmentBase {
      *     null then {@code initialization} will be used.
      * @param mediaTemplate A template defining the location of each media segment.
      */
-    public SegmentTemplate(RangedUri initialization, long timescale, long presentationTimeOffset,
-        int startNumber, long duration, List<SegmentTimelineElement> segmentTimeline,
-        UrlTemplate initializationTemplate, UrlTemplate mediaTemplate) {
+    public SegmentTemplate(
+        RangedUri initialization,
+        long timescale,
+        long presentationTimeOffset,
+        long startNumber,
+        long duration,
+        List<SegmentTimelineElement> segmentTimeline,
+        UrlTemplate initializationTemplate,
+        UrlTemplate mediaTemplate) {
       super(initialization, timescale, presentationTimeOffset, startNumber,
           duration, segmentTimeline);
       this.initializationTemplate = initializationTemplate;
@@ -309,10 +324,10 @@ public abstract class SegmentBase {
     }
 
     @Override
-    public RangedUri getSegmentUrl(Representation representation, int sequenceNumber) {
+    public RangedUri getSegmentUrl(Representation representation, long sequenceNumber) {
       long time;
       if (segmentTimeline != null) {
-        time = segmentTimeline.get(sequenceNumber - startNumber).startTime;
+        time = segmentTimeline.get((int) (sequenceNumber - startNumber)).startTime;
       } else {
         time = (sequenceNumber - startNumber) * duration;
       }
@@ -322,14 +337,14 @@ public abstract class SegmentBase {
     }
 
     @Override
-    public int getLastSegmentNum(long periodDurationUs) {
+    public int getSegmentCount(long periodDurationUs) {
       if (segmentTimeline != null) {
-        return segmentTimeline.size() + startNumber - 1;
-      } else if (periodDurationUs == C.TIME_UNSET) {
-        return DashSegmentIndex.INDEX_UNBOUNDED;
-      } else {
+        return segmentTimeline.size();
+      } else if (periodDurationUs != C.TIME_UNSET) {
         long durationUs = (duration * C.MICROS_PER_SECOND) / timescale;
-        return startNumber + (int) Util.ceilDivide(periodDurationUs, durationUs) - 1;
+        return (int) Util.ceilDivide(periodDurationUs, durationUs);
+      } else {
+        return DashSegmentIndex.INDEX_UNBOUNDED;
       }
     }
 

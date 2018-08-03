@@ -19,6 +19,7 @@ import android.net.Uri;
 import org.telegram.messenger.exoplayer2.C;
 import org.telegram.messenger.exoplayer2.ParserException;
 import org.telegram.messenger.exoplayer2.upstream.Loader.Loadable;
+import org.telegram.messenger.exoplayer2.util.Util;
 import java.io.IOException;
 import java.io.InputStream;
 
@@ -48,6 +49,22 @@ public final class ParsingLoadable<T> implements Loadable {
   }
 
   /**
+   * Loads a single parsable object.
+   *
+   * @param dataSource The {@link DataSource} through which the object should be read.
+   * @param uri The {@link Uri} of the object to read.
+   * @return The parsed object
+   * @throws IOException Thrown if there is an error while loading or parsing.
+   */
+  public static <T> T load(DataSource dataSource, Parser<? extends T> parser, Uri uri)
+      throws IOException {
+    ParsingLoadable<T> loadable =
+        new ParsingLoadable<>(dataSource, uri, C.DATA_TYPE_UNKNOWN, parser);
+    loadable.load();
+    return loadable.getResult();
+  }
+
+  /**
    * The {@link DataSpec} that defines the data to be loaded.
    */
   public final DataSpec dataSpec;
@@ -58,7 +75,7 @@ public final class ParsingLoadable<T> implements Loadable {
   public final int type;
 
   private final DataSource dataSource;
-  private final Parser<T> parser;
+  private final Parser<? extends T> parser;
 
   private volatile T result;
   private volatile boolean isCanceled;
@@ -70,9 +87,24 @@ public final class ParsingLoadable<T> implements Loadable {
    * @param type See {@link #type}.
    * @param parser Parses the object from the response.
    */
-  public ParsingLoadable(DataSource dataSource, Uri uri, int type, Parser<T> parser) {
+  public ParsingLoadable(DataSource dataSource, Uri uri, int type, Parser<? extends T> parser) {
+    this(
+        dataSource,
+        new DataSpec(uri, DataSpec.FLAG_ALLOW_GZIP | DataSpec.FLAG_ALLOW_CACHING_UNKNOWN_LENGTH),
+        type,
+        parser);
+  }
+
+  /**
+   * @param dataSource A {@link DataSource} to use when loading the data.
+   * @param dataSpec The {@link DataSpec} from which the object should be loaded.
+   * @param type See {@link #type}.
+   * @param parser Parses the object from the response.
+   */
+  public ParsingLoadable(DataSource dataSource, DataSpec dataSpec, int type,
+      Parser<? extends T> parser) {
     this.dataSource = dataSource;
-    this.dataSpec = new DataSpec(uri, DataSpec.FLAG_ALLOW_GZIP);
+    this.dataSpec = dataSpec;
     this.type = type;
     this.parser = parser;
   }
@@ -107,14 +139,14 @@ public final class ParsingLoadable<T> implements Loadable {
   }
 
   @Override
-  public final void load() throws IOException, InterruptedException {
+  public final void load() throws IOException {
     DataSourceInputStream inputStream = new DataSourceInputStream(dataSource, dataSpec);
     try {
       inputStream.open();
       result = parser.parse(dataSource.getUri(), inputStream);
     } finally {
       bytesLoaded = inputStream.bytesRead();
-      inputStream.close();
+      Util.closeQuietly(inputStream);
     }
   }
 

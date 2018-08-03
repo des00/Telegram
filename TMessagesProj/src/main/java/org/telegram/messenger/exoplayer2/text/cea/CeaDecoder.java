@@ -15,7 +15,9 @@
  */
 package org.telegram.messenger.exoplayer2.text.cea;
 
+import android.support.annotation.NonNull;
 import org.telegram.messenger.exoplayer2.C;
+import org.telegram.messenger.exoplayer2.Format;
 import org.telegram.messenger.exoplayer2.text.Subtitle;
 import org.telegram.messenger.exoplayer2.text.SubtitleDecoder;
 import org.telegram.messenger.exoplayer2.text.SubtitleDecoderException;
@@ -23,7 +25,7 @@ import org.telegram.messenger.exoplayer2.text.SubtitleInputBuffer;
 import org.telegram.messenger.exoplayer2.text.SubtitleOutputBuffer;
 import org.telegram.messenger.exoplayer2.util.Assertions;
 import java.util.LinkedList;
-import java.util.TreeSet;
+import java.util.PriorityQueue;
 
 /**
  * Base class for subtitle parsers for CEA captions.
@@ -33,23 +35,24 @@ import java.util.TreeSet;
   private static final int NUM_INPUT_BUFFERS = 10;
   private static final int NUM_OUTPUT_BUFFERS = 2;
 
-  private final LinkedList<SubtitleInputBuffer> availableInputBuffers;
+  private final LinkedList<CeaInputBuffer> availableInputBuffers;
   private final LinkedList<SubtitleOutputBuffer> availableOutputBuffers;
-  private final TreeSet<SubtitleInputBuffer> queuedInputBuffers;
+  private final PriorityQueue<CeaInputBuffer> queuedInputBuffers;
 
-  private SubtitleInputBuffer dequeuedInputBuffer;
+  private CeaInputBuffer dequeuedInputBuffer;
   private long playbackPositionUs;
+  private long queuedInputBufferCount;
 
   public CeaDecoder() {
     availableInputBuffers = new LinkedList<>();
     for (int i = 0; i < NUM_INPUT_BUFFERS; i++) {
-      availableInputBuffers.add(new SubtitleInputBuffer());
+      availableInputBuffers.add(new CeaInputBuffer());
     }
     availableOutputBuffers = new LinkedList<>();
     for (int i = 0; i < NUM_OUTPUT_BUFFERS; i++) {
-      availableOutputBuffers.add(new CeaOutputBuffer(this));
+      availableOutputBuffers.add(new CeaOutputBuffer());
     }
-    queuedInputBuffers = new TreeSet<>();
+    queuedInputBuffers = new PriorityQueue<>();
   }
 
   @Override
@@ -72,9 +75,15 @@ import java.util.TreeSet;
 
   @Override
   public void queueInputBuffer(SubtitleInputBuffer inputBuffer) throws SubtitleDecoderException {
-    Assertions.checkArgument(inputBuffer != null);
     Assertions.checkArgument(inputBuffer == dequeuedInputBuffer);
-    queuedInputBuffers.add(inputBuffer);
+    if (inputBuffer.isDecodeOnly()) {
+      // We can drop this buffer early (i.e. before it would be decoded) as the CEA formats allow
+      // for decoding to begin mid-stream.
+      releaseInputBuffer(dequeuedInputBuffer);
+    } else {
+      dequeuedInputBuffer.queuedInputBufferCount = queuedInputBufferCount++;
+      queuedInputBuffers.add(dequeuedInputBuffer);
+    }
     dequeuedInputBuffer = null;
   }
 
@@ -83,13 +92,12 @@ import java.util.TreeSet;
     if (availableOutputBuffers.isEmpty()) {
       return null;
     }
-
     // iterate through all available input buffers whose timestamps are less than or equal
     // to the current playback position; processing input buffers for future content should
     // be deferred until they would be applicable
     while (!queuedInputBuffers.isEmpty()
-        && queuedInputBuffers.first().timeUs <= playbackPositionUs) {
-      SubtitleInputBuffer inputBuffer = queuedInputBuffers.pollFirst();
+        && queuedInputBuffers.peek().timeUs <= playbackPositionUs) {
+      CeaInputBuffer inputBuffer = queuedInputBuffers.poll();
 
       // If the input buffer indicates we've reached the end of the stream, we can
       // return immediately with an output buffer propagating that
@@ -109,7 +117,7 @@ import java.util.TreeSet;
         Subtitle subtitle = createSubtitle();
         if (!inputBuffer.isDecodeOnly()) {
           SubtitleOutputBuffer outputBuffer = availableOutputBuffers.pollFirst();
-          outputBuffer.setContent(inputBuffer.timeUs, subtitle, 0);
+          outputBuffer.setContent(inputBuffer.timeUs, subtitle, Format.OFFSET_SAMPLE_RELATIVE);
           releaseInputBuffer(inputBuffer);
           return outputBuffer;
         }
@@ -121,7 +129,7 @@ import java.util.TreeSet;
     return null;
   }
 
-  private void releaseInputBuffer(SubtitleInputBuffer inputBuffer) {
+  private void releaseInputBuffer(CeaInputBuffer inputBuffer) {
     inputBuffer.clear();
     availableInputBuffers.add(inputBuffer);
   }
@@ -133,9 +141,10 @@ import java.util.TreeSet;
 
   @Override
   public void flush() {
+    queuedInputBufferCount = 0;
     playbackPositionUs = 0;
     while (!queuedInputBuffers.isEmpty()) {
-      releaseInputBuffer(queuedInputBuffers.pollFirst());
+      releaseInputBuffer(queuedInputBuffers.poll());
     }
     if (dequeuedInputBuffer != null) {
       releaseInputBuffer(dequeuedInputBuffer);
@@ -164,4 +173,32 @@ import java.util.TreeSet;
    */
   protected abstract void decode(SubtitleInputBuffer inputBuffer);
 
+  private static final class CeaInputBuffer extends SubtitleInputBuffer
+      implements Comparable<CeaInputBuffer> {
+
+    private long queuedInputBufferCount;
+
+    @Override
+    public int compareTo(@NonNull CeaInputBuffer other) {
+      if (isEndOfStream() != other.isEndOfStream()) {
+        return isEndOfStream() ? 1 : -1;
+      }
+      long delta = timeUs - other.timeUs;
+      if (delta == 0) {
+        delta = queuedInputBufferCount - other.queuedInputBufferCount;
+        if (delta == 0) {
+          return 0;
+        }
+      }
+      return delta > 0 ? 1 : -1;
+    }
+  }
+
+  private final class CeaOutputBuffer extends SubtitleOutputBuffer {
+
+    @Override
+    public final void release() {
+      releaseOutputBuffer(this);
+    }
+  }
 }

@@ -10,10 +10,12 @@ package org.telegram.ui.Components;
 
 import android.animation.AnimatorSet;
 import android.animation.ObjectAnimator;
+import android.annotation.SuppressLint;
 import android.content.Context;
 import android.os.Build;
 import android.text.Editable;
 import android.text.InputFilter;
+import android.text.SpannableStringBuilder;
 import android.text.TextWatcher;
 import android.text.style.ImageSpan;
 import android.util.TypedValue;
@@ -25,7 +27,6 @@ import android.view.MenuItem;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.inputmethod.EditorInfo;
-import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -33,10 +34,11 @@ import android.widget.LinearLayout;
 import org.telegram.messenger.AndroidUtilities;
 import org.telegram.messenger.Emoji;
 import org.telegram.messenger.LocaleController;
+import org.telegram.messenger.MessagesController;
 import org.telegram.messenger.NotificationCenter;
-import org.telegram.messenger.ApplicationLoader;
 import org.telegram.messenger.FileLog;
 import org.telegram.messenger.R;
+import org.telegram.messenger.UserConfig;
 import org.telegram.tgnet.TLRPC;
 import org.telegram.ui.ActionBar.Theme;
 
@@ -51,7 +53,7 @@ public class PhotoViewerCaptionEnterView extends FrameLayout implements Notifica
         void onWindowSizeChanged(int size);
     }
 
-    private EditText messageEditText;
+    private EditTextCaption messageEditText;
     private ImageView emojiButton;
     private EmojiView emojiView;
     private SizeNotifierFrameLayoutPhoto sizeNotifierLayout;
@@ -76,7 +78,7 @@ public class PhotoViewerCaptionEnterView extends FrameLayout implements Notifica
 
     private boolean innerTextChange;
 
-    private final int captionMaxLength = 200;
+    private int captionMaxLength = 200;
 
     private PhotoViewerCaptionEnterViewDelegate delegate;
 
@@ -114,7 +116,7 @@ public class PhotoViewerCaptionEnterView extends FrameLayout implements Notifica
             }
         });
 
-        messageEditText = new EditText(context) {
+        messageEditText = new EditTextCaption(context) {
             @Override
             protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
                 try {
@@ -191,7 +193,8 @@ public class PhotoViewerCaptionEnterView extends FrameLayout implements Notifica
         messageEditText.setGravity(Gravity.BOTTOM);
         messageEditText.setPadding(0, AndroidUtilities.dp(11), 0, AndroidUtilities.dp(12));
         messageEditText.setBackgroundDrawable(null);
-        AndroidUtilities.clearCursorDrawable(messageEditText);
+        messageEditText.setCursorColor(0xffffffff);
+        messageEditText.setCursorSize(AndroidUtilities.dp(20));
         messageEditText.setTextColor(0xffffffff);
         messageEditText.setHintTextColor(0xb2ffffff);
         InputFilter[] inputFilters = new InputFilter[1];
@@ -293,6 +296,7 @@ public class PhotoViewerCaptionEnterView extends FrameLayout implements Notifica
         return false;
     }
 
+    @SuppressLint("PrivateApi")
     @SuppressWarnings("unchecked")
     private void fixActionMode(ActionMode mode) {
         try {
@@ -336,7 +340,7 @@ public class PhotoViewerCaptionEnterView extends FrameLayout implements Notifica
     }
 
     public void onCreate() {
-        NotificationCenter.getInstance().addObserver(this, NotificationCenter.emojiDidLoaded);
+        NotificationCenter.getGlobalInstance().addObserver(this, NotificationCenter.emojiDidLoaded);
         sizeNotifierLayout.setDelegate(this);
     }
 
@@ -346,7 +350,7 @@ public class PhotoViewerCaptionEnterView extends FrameLayout implements Notifica
             closeKeyboard();
         }
         keyboardVisible = false;
-        NotificationCenter.getInstance().removeObserver(this, NotificationCenter.emojiDidLoaded);
+        NotificationCenter.getGlobalInstance().removeObserver(this, NotificationCenter.emojiDidLoaded);
         if (sizeNotifierLayout != null) {
             sizeNotifierLayout.setDelegate(null);
         }
@@ -365,6 +369,25 @@ public class PhotoViewerCaptionEnterView extends FrameLayout implements Notifica
         if (delegate != null) {
             delegate.onTextChanged(messageEditText.getText());
         }
+        int old = captionMaxLength;
+        captionMaxLength = MessagesController.getInstance(UserConfig.selectedAccount).maxCaptionLength;
+        if (old != captionMaxLength) {
+            InputFilter[] inputFilters = new InputFilter[1];
+            inputFilters[0] = new InputFilter.LengthFilter(captionMaxLength);
+            messageEditText.setFilters(inputFilters);
+        }
+    }
+
+    public int getSelectionLength() {
+        if (messageEditText == null) {
+            return 0;
+        }
+        try {
+            return messageEditText.getSelectionEnd() - messageEditText.getSelectionStart();
+        } catch (Exception e) {
+            FileLog.e(e);
+        }
+        return 0;
     }
 
     public int getCursorPosition() {
@@ -374,10 +397,124 @@ public class PhotoViewerCaptionEnterView extends FrameLayout implements Notifica
         return messageEditText.getSelectionStart();
     }
 
-    public void replaceWithText(int start, int len, String text) {
+    private void createEmojiView() {
+        if (emojiView != null) {
+            return;
+        }
+        emojiView = new EmojiView(false, false, getContext(), null);
+        emojiView.setListener(new EmojiView.Listener() {
+
+            @Override
+            public boolean onBackspace() {
+                if (messageEditText.length() == 0) {
+                    return false;
+                }
+                messageEditText.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DEL));
+                return true;
+            }
+
+            @Override
+            public void onEmojiSelected(String symbol) {
+                if (messageEditText.length() + symbol.length() > captionMaxLength) {
+                    return;
+                }
+                int i = messageEditText.getSelectionEnd();
+                if (i < 0) {
+                    i = 0;
+                }
+                try {
+                    innerTextChange = true;
+                    CharSequence localCharSequence = Emoji.replaceEmoji(symbol, messageEditText.getPaint().getFontMetricsInt(), AndroidUtilities.dp(20), false);
+                    messageEditText.setText(messageEditText.getText().insert(i, localCharSequence));
+                    int j = i + localCharSequence.length();
+                    messageEditText.setSelection(j, j);
+                } catch (Exception e) {
+                    FileLog.e(e);
+                } finally {
+                    innerTextChange = false;
+                }
+            }
+
+            @Override
+            public void onStickerSelected(TLRPC.Document sticker) {
+
+            }
+
+            @Override
+            public void onStickersSettingsClick() {
+
+            }
+
+            @Override
+            public void onGifSelected(TLRPC.Document gif) {
+
+            }
+
+            @Override
+            public void onGifTab(boolean opened) {
+
+            }
+
+            @Override
+            public void onStickersTab(boolean opened) {
+
+            }
+
+            @Override
+            public void onClearEmojiRecent() {
+
+            }
+
+            @Override
+            public void onShowStickerSet(TLRPC.StickerSet stickerSet, TLRPC.InputStickerSet inputStickerSet) {
+
+            }
+
+            @Override
+            public void onStickerSetAdd(TLRPC.StickerSetCovered stickerSet) {
+
+            }
+
+            @Override
+            public void onStickerSetRemove(TLRPC.StickerSetCovered stickerSet) {
+
+            }
+
+            @Override
+            public void onStickersGroupClick(int chatId) {
+
+            }
+
+            @Override
+            public void onSearchOpenClose(boolean open) {
+
+            }
+
+            @Override
+            public boolean isSearchOpened() {
+                return false;
+            }
+
+            @Override
+            public boolean isExpanded() {
+                return false;
+            }
+        });
+        sizeNotifierLayout.addView(emojiView);
+    }
+
+    public void addEmojiToRecent(String code) {
+        createEmojiView();
+        emojiView.addEmojiToRecent(code);
+    }
+
+    public void replaceWithText(int start, int len, CharSequence text, boolean parseEmoji) {
         try {
-            StringBuilder builder = new StringBuilder(messageEditText.getText());
+            SpannableStringBuilder builder = new SpannableStringBuilder(messageEditText.getText());
             builder.replace(start, start + len, text);
+            if (parseEmoji) {
+                Emoji.replaceEmoji(builder, messageEditText.getPaint().getFontMetricsInt(), AndroidUtilities.dp(20), false);
+            }
             messageEditText.setText(builder);
             if (start + text.length() <= messageEditText.length()) {
                 messageEditText.setSelection(start + text.length());
@@ -430,91 +567,16 @@ public class PhotoViewerCaptionEnterView extends FrameLayout implements Notifica
     private void showPopup(int show) {
         if (show == 1) {
             if (emojiView == null) {
-                emojiView = new EmojiView(false, false, getContext());
-                emojiView.setListener(new EmojiView.Listener() {
-                    public boolean onBackspace() {
-                        if (messageEditText.length() == 0) {
-                            return false;
-                        }
-                        messageEditText.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DEL));
-                        return true;
-                    }
-
-                    public void onEmojiSelected(String symbol) {
-                        if (messageEditText.length() + symbol.length() > captionMaxLength) {
-                            return;
-                        }
-                        int i = messageEditText.getSelectionEnd();
-                        if (i < 0) {
-                            i = 0;
-                        }
-                        try {
-                            innerTextChange = true;
-                            CharSequence localCharSequence = Emoji.replaceEmoji(symbol, messageEditText.getPaint().getFontMetricsInt(), AndroidUtilities.dp(20), false);
-                            messageEditText.setText(messageEditText.getText().insert(i, localCharSequence));
-                            int j = i + localCharSequence.length();
-                            messageEditText.setSelection(j, j);
-                        } catch (Exception e) {
-                            FileLog.e(e);
-                        } finally {
-                            innerTextChange = false;
-                        }
-                    }
-
-                    public void onStickerSelected(TLRPC.Document sticker) {
-
-                    }
-
-                    @Override
-                    public void onStickersSettingsClick() {
-
-                    }
-
-                    @Override
-                    public void onGifSelected(TLRPC.Document gif) {
-
-                    }
-
-                    @Override
-                    public void onGifTab(boolean opened) {
-
-                    }
-
-                    @Override
-                    public void onStickersTab(boolean opened) {
-
-                    }
-
-                    @Override
-                    public void onClearEmojiRecent() {
-
-                    }
-
-                    @Override
-                    public void onShowStickerSet(TLRPC.StickerSet stickerSet, TLRPC.InputStickerSet inputStickerSet) {
-
-                    }
-
-                    @Override
-                    public void onStickerSetAdd(TLRPC.StickerSetCovered stickerSet) {
-
-                    }
-
-                    @Override
-                    public void onStickerSetRemove(TLRPC.StickerSetCovered stickerSet) {
-
-                    }
-                });
-                sizeNotifierLayout.addView(emojiView);
+                createEmojiView();
             }
 
             emojiView.setVisibility(VISIBLE);
 
             if (keyboardHeight <= 0) {
-                keyboardHeight = ApplicationLoader.applicationContext.getSharedPreferences("emoji", 0).getInt("kbd_height", AndroidUtilities.dp(200));
+                keyboardHeight = MessagesController.getGlobalEmojiSettings().getInt("kbd_height", AndroidUtilities.dp(200));
             }
             if (keyboardHeightLand <= 0) {
-                keyboardHeightLand = ApplicationLoader.applicationContext.getSharedPreferences("emoji", 0).getInt("kbd_height_land3", AndroidUtilities.dp(200));
+                keyboardHeightLand = MessagesController.getGlobalEmojiSettings().getInt("kbd_height_land3", AndroidUtilities.dp(200));
             }
             int currentHeight = AndroidUtilities.displaySize.x > AndroidUtilities.displaySize.y ? keyboardHeightLand : keyboardHeight;
 
@@ -598,10 +660,10 @@ public class PhotoViewerCaptionEnterView extends FrameLayout implements Notifica
         if (height > AndroidUtilities.dp(50) && keyboardVisible && !AndroidUtilities.isInMultiwindow && !forceFloatingEmoji) {
             if (isWidthGreater) {
                 keyboardHeightLand = height;
-                ApplicationLoader.applicationContext.getSharedPreferences("emoji", 0).edit().putInt("kbd_height_land3", keyboardHeightLand).commit();
+                MessagesController.getGlobalEmojiSettings().edit().putInt("kbd_height_land3", keyboardHeightLand).commit();
             } else {
                 keyboardHeight = height;
-                ApplicationLoader.applicationContext.getSharedPreferences("emoji", 0).edit().putInt("kbd_height", keyboardHeight).commit();
+                MessagesController.getGlobalEmojiSettings().edit().putInt("kbd_height", keyboardHeight).commit();
             }
         }
 
@@ -646,7 +708,7 @@ public class PhotoViewerCaptionEnterView extends FrameLayout implements Notifica
     }
 
     @Override
-    public void didReceivedNotification(int id, Object... args) {
+    public void didReceivedNotification(int id, int account, Object... args) {
         if (id == NotificationCenter.emojiDidLoaded) {
             if (emojiView != null) {
                 emojiView.invalidateViews();

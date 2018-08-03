@@ -18,6 +18,7 @@ package org.telegram.messenger.exoplayer2.extractor.ogg;
 import org.telegram.messenger.exoplayer2.ParserException;
 import org.telegram.messenger.exoplayer2.extractor.ExtractorInput;
 import org.telegram.messenger.exoplayer2.extractor.SeekMap;
+import org.telegram.messenger.exoplayer2.extractor.SeekPoint;
 import org.telegram.messenger.exoplayer2.util.Assertions;
 import java.io.EOFException;
 import java.io.IOException;
@@ -45,7 +46,6 @@ import java.io.IOException;
 
   private int state;
   private long totalGranules;
-  private volatile long queriedGranule;
   private long positionBeforeSeekToEnd;
   private long targetGranule;
 
@@ -114,9 +114,9 @@ import java.io.IOException;
   }
 
   @Override
-  public long startSeek() {
+  public long startSeek(long timeUs) {
     Assertions.checkArgument(state == STATE_IDLE || state == STATE_SEEK);
-    targetGranule = queriedGranule;
+    targetGranule = timeUs == 0 ? 0 : streamReader.convertTimeToGranule(timeUs);
     state = STATE_SEEK;
     resetSeeking();
     return targetGranule;
@@ -187,7 +187,7 @@ import java.io.IOException;
         return start;
       }
 
-      long offset = pageSize * (granuleDistance <= 0 ? 2 : 1);
+      long offset = pageSize * (granuleDistance <= 0 ? 2L : 1L);
       long nextPosition = input.getPosition() - offset
           + (granuleDistance * (end - start) / (endGranule - startGranule));
 
@@ -220,13 +220,13 @@ import java.io.IOException;
     }
 
     @Override
-    public long getPosition(long timeUs) {
+    public SeekPoints getSeekPoints(long timeUs) {
       if (timeUs == 0) {
-        queriedGranule = 0;
-        return startPosition;
+        return new SeekPoints(new SeekPoint(0, startPosition));
       }
-      queriedGranule = streamReader.convertTimeToGranule(timeUs);
-      return getEstimatedPosition(startPosition, queriedGranule, DEFAULT_OFFSET);
+      long granule = streamReader.convertTimeToGranule(timeUs);
+      long estimatedPosition = getEstimatedPosition(startPosition, granule, DEFAULT_OFFSET);
+      return new SeekPoints(new SeekPoint(timeUs, estimatedPosition));
     }
 
     @Override

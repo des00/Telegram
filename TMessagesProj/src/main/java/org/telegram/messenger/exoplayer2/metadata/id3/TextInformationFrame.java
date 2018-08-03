@@ -17,27 +17,31 @@ package org.telegram.messenger.exoplayer2.metadata.id3;
 
 import android.os.Parcel;
 import android.os.Parcelable;
+import android.support.annotation.Nullable;
 import org.telegram.messenger.exoplayer2.util.Util;
 
 /**
- * Text information ("T000" - "TZZZ", excluding "TXXX") ID3 frame.
+ * Text information ID3 frame.
  */
 public final class TextInformationFrame extends Id3Frame {
 
   public final String description;
+  public final String value;
 
-  public TextInformationFrame(String id, String description) {
+  public TextInformationFrame(String id, String description, String value) {
     super(id);
     this.description = description;
+    this.value = value;
   }
 
   /* package */ TextInformationFrame(Parcel in) {
     super(in.readString());
     description = in.readString();
+    value = in.readString();
   }
 
   @Override
-  public boolean equals(Object obj) {
+  public boolean equals(@Nullable Object obj) {
     if (this == obj) {
       return true;
     }
@@ -45,7 +49,8 @@ public final class TextInformationFrame extends Id3Frame {
       return false;
     }
     TextInformationFrame other = (TextInformationFrame) obj;
-    return id.equals(other.id) && Util.areEqual(description, other.description);
+    return id.equals(other.id) && Util.areEqual(description, other.description)
+        && Util.areEqual(value, other.value);
   }
 
   @Override
@@ -53,13 +58,22 @@ public final class TextInformationFrame extends Id3Frame {
     int result = 17;
     result = 31 * result + id.hashCode();
     result = 31 * result + (description != null ? description.hashCode() : 0);
+    result = 31 * result + (value != null ? value.hashCode() : 0);
     return result;
   }
+
+  @Override
+  public String toString() {
+    return id + ": value=" + value;
+  }
+
+  // Parcelable implementation.
 
   @Override
   public void writeToParcel(Parcel dest, int flags) {
     dest.writeString(id);
     dest.writeString(description);
+    dest.writeString(value);
   }
 
   public static final Parcelable.Creator<TextInformationFrame> CREATOR =

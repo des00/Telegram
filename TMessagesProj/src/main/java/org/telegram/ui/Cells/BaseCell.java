@@ -12,10 +12,10 @@ import android.content.Context;
 import android.graphics.drawable.Drawable;
 import android.view.HapticFeedbackConstants;
 import android.view.MotionEvent;
-import android.view.View;
 import android.view.ViewConfiguration;
+import android.view.ViewGroup;
 
-public class BaseCell extends View {
+public abstract class BaseCell extends ViewGroup {
 
     private final class CheckForTap implements Runnable {
         public void run() {
@@ -49,17 +49,18 @@ public class BaseCell extends View {
 
     public BaseCell(Context context) {
         super(context);
+        setWillNotDraw(false);
     }
 
-    protected void setDrawableBounds(Drawable drawable, int x, int y) {
+    public static void setDrawableBounds(Drawable drawable, int x, int y) {
         setDrawableBounds(drawable, x, y, drawable.getIntrinsicWidth(), drawable.getIntrinsicHeight());
     }
 
-    protected void setDrawableBounds(Drawable drawable, float x, float y) {
+    public static void setDrawableBounds(Drawable drawable, float x, float y) {
         setDrawableBounds(drawable, (int) x, (int) y, drawable.getIntrinsicWidth(), drawable.getIntrinsicHeight());
     }
 
-    protected void setDrawableBounds(Drawable drawable, int x, int y, int w, int h) {
+    public static void setDrawableBounds(Drawable drawable, int x, int y, int w, int h) {
         if (drawable != null) {
             drawable.setBounds(x, y, x + w, y + h);
         }
